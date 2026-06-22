@@ -1,0 +1,6 @@
+{
+  "name": "WhatsApp Clone",
+  "description": "A fully functional WhatsApp Clone featuring real-time messaging, end-to-end encryption, and group chats powered by Supabase.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
