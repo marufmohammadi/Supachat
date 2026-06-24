@@ -344,4 +344,110 @@ BEGIN
   END IF;
 END $$;
 
+-- 12. GROUP CALL TABLES
+CREATE TABLE IF NOT EXISTS public.call_rooms (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  group_id UUID REFERENCES public.groups(id) ON DELETE CASCADE NOT NULL,
+  call_type TEXT NOT NULL CHECK (call_type IN ('audio', 'video')),
+  created_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+  status TEXT DEFAULT 'ringing' CHECK (status IN ('ringing', 'active', 'ended')) NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS public.call_participants (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  room_id UUID REFERENCES public.call_rooms(id) ON DELETE CASCADE NOT NULL,
+  user_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE NOT NULL,
+  joined_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+  left_at TIMESTAMP WITH TIME ZONE,
+  is_muted BOOLEAN DEFAULT FALSE NOT NULL,
+  camera_enabled BOOLEAN DEFAULT TRUE NOT NULL,
+  UNIQUE (room_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS public.group_call_signals (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  room_id UUID REFERENCES public.call_rooms(id) ON DELETE CASCADE NOT NULL,
+  sender_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE NOT NULL,
+  receiver_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE NOT NULL,
+  type TEXT NOT NULL,
+  data JSONB NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- Indexes
+CREATE INDEX IF NOT EXISTS idx_call_rooms_group_id ON public.call_rooms(group_id);
+CREATE INDEX IF NOT EXISTS idx_call_participants_room_id ON public.call_participants(room_id);
+CREATE INDEX IF NOT EXISTS idx_call_participants_user_id ON public.call_participants(user_id);
+CREATE INDEX IF NOT EXISTS idx_group_call_signals_room_id ON public.group_call_signals(room_id);
+
+-- Enable RLS
+ALTER TABLE public.call_rooms ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.call_participants ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.group_call_signals ENABLE ROW LEVEL SECURITY;
+
+-- Policies for call_rooms
+DROP POLICY IF EXISTS "Any group member can manage call rooms" ON public.call_rooms;
+CREATE POLICY "Any group member can manage call rooms" ON public.call_rooms FOR ALL
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.group_members
+      WHERE group_members.group_id = call_rooms.group_id AND group_members.user_id = auth.uid()
+    )
+  );
+
+-- Policies for call_participants
+DROP POLICY IF EXISTS "Any group member can manage participants" ON public.call_participants;
+CREATE POLICY "Any group member can manage participants" ON public.call_participants FOR ALL
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.call_rooms r
+      JOIN public.group_members m ON m.group_id = r.group_id
+      WHERE r.id = call_participants.room_id AND m.user_id = auth.uid()
+    )
+  );
+
+-- Policies for group_call_signals
+DROP POLICY IF EXISTS "Participants can manage signals" ON public.group_call_signals;
+CREATE POLICY "Participants can manage signals" ON public.group_call_signals FOR ALL
+  USING (
+    auth.uid() = sender_id OR auth.uid() = receiver_id
+  );
+
+-- Grants
+GRANT ALL ON public.call_rooms TO postgres, anon, authenticated, service_role;
+GRANT ALL ON public.call_participants TO postgres, anon, authenticated, service_role;
+GRANT ALL ON public.group_call_signals TO postgres, anon, authenticated, service_role;
+
+-- Enable Real-Time replication
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' 
+      AND schemaname = 'public' 
+      AND tablename = 'call_rooms'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.call_rooms;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' 
+      AND schemaname = 'public' 
+      AND tablename = 'call_participants'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.call_participants;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' 
+      AND schemaname = 'public' 
+      AND tablename = 'group_call_signals'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.group_call_signals;
+  END IF;
+END $$;
+
 `;

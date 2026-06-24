@@ -19,6 +19,14 @@ import { ActiveVoiceCallScreen } from './calls/ActiveVoiceCallScreen';
 import { ActiveVideoCallScreen } from './calls/ActiveVideoCallScreen';
 import { CallHistoryScreen } from './calls/CallHistoryScreen';
 
+// Group WebRTC Calling System Imports
+import { useGroupCall } from '../hooks/group-call/useGroupCall';
+import { GroupCallButtons } from './group-calls/GroupCallButtons';
+import { IncomingGroupCallModal } from './group-calls/IncomingGroupCallModal';
+import { GroupCallScreen } from './group-calls/GroupCallScreen';
+import { groupSignalingService } from '../services/group-signaling';
+import { CallRoom as GroupCallRoom } from '../types/group-call';
+
 function getFriendlyDateHeader(dateStr: string): string {
   if (!dateStr) return 'Unknown Date';
   try {
@@ -98,6 +106,34 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
     }
   });
 
+  // Group Call System Hooks & States
+  const [activeGroupRoomForCurrentChat, setActiveGroupRoomForCurrentChat] = useState<GroupCallRoom | null>(null);
+  const {
+    activeRoom: activeGroupRoom,
+    participants: groupParticipants,
+    localStream: groupLocalStream,
+    remoteStreams: groupRemoteStreams,
+    callDuration: groupCallDuration,
+    isMinimized: isGroupCallMinimized,
+    callError: groupCallError,
+    isMuted: isGroupMuted,
+    isCameraEnabled: isGroupCameraEnabled,
+    facingMode: groupFacingMode,
+    incomingRoom: incomingGroupRoom,
+    incomingGroupName,
+    incomingCallerName,
+    setIsMinimized: setIsGroupCallMinimized,
+    setCallError: setGroupCallError,
+    startGroupCall,
+    joinGroupCall,
+    leaveGroupCall,
+    endGroupCall,
+    toggleLocalMute: toggleGroupLocalMute,
+    toggleLocalCamera: toggleGroupLocalCamera,
+    switchCamera: switchGroupCamera,
+    rejectIncomingGroupCall,
+  } = useGroupCall({ currentUserId });
+
   // State Management
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
@@ -172,6 +208,42 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
   // Keep activeChatRef updated
   useEffect(() => {
     activeChatRef.current = activeChat;
+  }, [activeChat]);
+
+  // Real-time group call detector for current group chat
+  useEffect(() => {
+    if (!activeChat || activeChat.type !== 'group') {
+      setActiveGroupRoomForCurrentChat(null);
+      return;
+    }
+
+    // Initial fetch
+    groupSignalingService.fetchActiveRoomForGroup(activeChat.id).then((room) => {
+      setActiveGroupRoomForCurrentChat(room);
+    });
+
+    // Real-time listener for call_rooms updates/inserts of this group
+    const channel = supabase
+      .channel(`active_group_call_detector_${activeChat.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'call_rooms',
+          filter: `group_id=eq.${activeChat.id}`
+        },
+        () => {
+          groupSignalingService.fetchActiveRoomForGroup(activeChat.id).then((room) => {
+            setActiveGroupRoomForCurrentChat(room);
+          });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [activeChat]);
 
   // Keep groupsRef updated to prevent realtime subscription drop cycles
@@ -1781,6 +1853,26 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
                 />
               </div>
             )}
+
+            {activeChat && activeChat.type === 'group' && (
+              <div className="flex items-center gap-2">
+                {activeGroupRoomForCurrentChat ? (
+                  <button
+                    id="join-group-call-banner-btn"
+                    onClick={() => joinGroupCall(activeGroupRoomForCurrentChat)}
+                    className="bg-emerald-500 hover:bg-emerald-400 text-black text-xs font-bold px-4 py-2 rounded-full animate-pulse transition-all shadow-md shrink-0 flex items-center gap-1.5 cursor-pointer active:scale-95"
+                  >
+                    <Users className="w-3.5 h-3.5" /> Join Call
+                  </button>
+                ) : (
+                  <GroupCallButtons
+                    groupId={activeChat.id}
+                    onStartGroupCall={(gId, type) => startGroupCall(gId, type)}
+                    disabled={!!activeCall || !!activeGroupRoom}
+                  />
+                )}
+              </div>
+            )}
           </div>
 
           {/* Encryption Warning Bar */}
@@ -2287,6 +2379,49 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
           onSwitchCamera={switchCamera}
           onEndCall={endCall}
         />
+      )}
+
+      {/* --- GROUP CALLS OVERLAY SYSTEMS --- */}
+      {/* Incoming Group Call Prompt */}
+      {incomingGroupRoom && incomingGroupName && incomingCallerName && (
+        <IncomingGroupCallModal
+          room={incomingGroupRoom}
+          groupName={incomingGroupName}
+          callerName={incomingCallerName}
+          onAccept={(room) => joinGroupCall(room)}
+          onReject={rejectIncomingGroupCall}
+        />
+      )}
+
+      {/* Active Group Calling Overlay */}
+      {activeGroupRoom && (
+        <GroupCallScreen
+          activeRoom={activeGroupRoom}
+          participants={groupParticipants}
+          localStream={groupLocalStream}
+          remoteStreams={groupRemoteStreams}
+          callDuration={groupCallDuration}
+          isMinimized={isGroupCallMinimized}
+          isMuted={isGroupMuted}
+          isCameraEnabled={isGroupCameraEnabled}
+          facingMode={groupFacingMode}
+          onLeaveCall={leaveGroupCall}
+          onEndCall={endGroupCall}
+          onToggleMute={toggleGroupLocalMute}
+          onToggleCamera={toggleGroupLocalCamera}
+          onSwitchCamera={switchGroupCamera}
+          onMinimize={setIsGroupCallMinimized}
+          currentUserId={currentUserId}
+        />
+      )}
+
+      {/* Group Call Error Toast Alert */}
+      {groupCallError && (
+        <div className="fixed bottom-4 right-4 z-[99999] bg-red-600 border border-red-700/50 text-white rounded-lg px-4 py-3 shadow-2xl flex items-center gap-3 animate-bounce">
+          <span className="text-lg">⚠️</span>
+          <div className="text-xs font-semibold">{groupCallError}</div>
+          <button onClick={() => setGroupCallError(null)} className="text-white hover:text-gray-200 ml-2">✕</button>
+        </div>
       )}
 
       {/* Error Call Toast Alert if any */}
