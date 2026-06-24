@@ -8,6 +8,17 @@ import { encryptMessage, decryptMessage, importPublicKey } from '../lib/crypto';
 import { Profile, Group, Message } from '../types';
 import E2EEKeyManager from './E2EEKeyManager';
 
+// WebRTC Calling System Imports
+import { PhoneCall } from 'lucide-react';
+import { useCall } from '../hooks/calls/useCall';
+import { CallButton } from './calls/CallButton';
+import { VideoCallButton } from './calls/VideoCallButton';
+import { IncomingCallModal } from './calls/IncomingCallModal';
+import { OutgoingCallScreen } from './calls/OutgoingCallScreen';
+import { ActiveVoiceCallScreen } from './calls/ActiveVoiceCallScreen';
+import { ActiveVideoCallScreen } from './calls/ActiveVideoCallScreen';
+import { CallHistoryScreen } from './calls/CallHistoryScreen';
+
 function getFriendlyDateHeader(dateStr: string): string {
   if (!dateStr) return 'Unknown Date';
   try {
@@ -54,6 +65,38 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
   const currentUserEmail = session?.user?.email;
   const currentUsername = session?.user?.user_metadata?.username || currentUserEmail?.split('@')[0] || 'Me';
   const currentUserAvatar = session?.user?.user_metadata?.avatar_url || `https://api.dicebear.com/7.x/adventurer/svg?seed=${currentUserId}`;
+
+  // Call System State & Hook
+  const [showCallHistory, setShowCallHistory] = useState(false);
+  const {
+    activeCall,
+    callRole,
+    localStream,
+    remoteStream,
+    isMuted,
+    isCameraEnabled,
+    isSpeakerMode,
+    callDuration,
+    callError,
+    otherPartyProfile,
+    callHistory,
+    setCallError,
+    startCall,
+    acceptCall,
+    rejectCall,
+    endCall,
+    toggleMute,
+    toggleCamera,
+    switchCamera,
+    setIsSpeakerMode,
+  } = useCall({
+    currentUserId,
+    currentUserProfile: {
+      id: currentUserId,
+      username: currentUsername,
+      avatar_url: currentUserAvatar
+    }
+  });
 
   // State Management
   const [profiles, setProfiles] = useState<Profile[]>([]);
@@ -1451,6 +1494,18 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
               <Database className="w-4 h-4" />
             </button>
 
+            {/* Calling History Trigger */}
+            <button
+              id="show-calls-history-btn"
+              onClick={() => setShowCallHistory(!showCallHistory)}
+              title="Call History"
+              className={`p-2 rounded-full cursor-pointer hover:bg-gray-700/60 transition-colors ${
+                showCallHistory ? 'text-emerald-400 bg-emerald-500/10' : 'text-gray-400 hover:text-white'
+              }`}
+            >
+              <PhoneCall className="w-4 h-4" />
+            </button>
+
             <button
               id="logout-btn"
               onClick={onLogout}
@@ -1496,153 +1551,166 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
           </div>
         )}
 
-        {/* Searching Contacts */}
-        <div className="p-3">
-          <div className="relative bg-[#202c33] flex items-center rounded-xl px-3 py-1.5 border border-gray-800 focus-within:border-emerald-500/40 select-none">
-            <Search className="w-4 h-4 text-gray-400 mr-2" />
-            <input 
-              type="text" 
-              placeholder="Search or start new chat" 
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full bg-transparent text-xs text-white focus:outline-none placeholder-gray-400"
+        {showCallHistory ? (
+          <div className="flex-1 min-h-0">
+            <CallHistoryScreen
+              logs={callHistory}
+              currentUserId={currentUserId}
+              onClose={() => setShowCallHistory(false)}
+              onStartCall={startCall}
             />
           </div>
-        </div>
+        ) : (
+          <>
+            {/* Searching Contacts */}
+            <div className="p-3">
+              <div className="relative bg-[#202c33] flex items-center rounded-xl px-3 py-1.5 border border-gray-800 focus-within:border-emerald-500/40 select-none">
+                <Search className="w-4 h-4 text-gray-400 mr-2" />
+                <input 
+                  type="text" 
+                  placeholder="Search or start new chat" 
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full bg-transparent text-xs text-white focus:outline-none placeholder-gray-400"
+                />
+              </div>
+            </div>
 
-        {/* Dynamic Chats List */}
-        <div className="flex-1 overflow-y-auto divide-y divide-gray-800/40">
-          
-          {/* Section: Direct Actions */}
-          <div className="p-2 space-y-2 bg-[#1f2c34]/20">
-            <div className="flex gap-2">
-              <button
-                id="modal-new-dm-btn"
-                onClick={() => setShowNewDirectChatModal(true)}
-                className="flex-1 py-2 px-3 bg-[#02e7f5]/10 hover:bg-[#02e7f5]/15 text-[#02e7f5] border border-[#02e7f5]/20 text-xs rounded-lg font-semibold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-              >
-                <Plus className="w-3.5 h-3.5" /> Private Chat
-              </button>
+            {/* Dynamic Chats List */}
+            <div className="flex-1 overflow-y-auto divide-y divide-gray-800/40">
               
-              <button
-                id="modal-new-group-btn"
-                onClick={() => setShowNewGroupModal(true)}
-                className="flex-1 py-2 px-3 bg-emerald-500/10 hover:bg-emerald-500/15 text-emerald-400 border border-emerald-500/20 text-xs rounded-lg font-semibold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-              >
-                <Users className="w-3.5 h-3.5" /> Group Chat
-              </button>
+              {/* Section: Direct Actions */}
+              <div className="p-2 space-y-2 bg-[#1f2c34]/20">
+                <div className="flex gap-2">
+                  <button
+                    id="modal-new-dm-btn"
+                    onClick={() => setShowNewDirectChatModal(true)}
+                    className="flex-1 py-2 px-3 bg-[#02e7f5]/10 hover:bg-[#02e7f5]/15 text-[#02e7f5] border border-[#02e7f5]/20 text-xs rounded-lg font-semibold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" /> Private Chat
+                  </button>
+                  
+                  <button
+                    id="modal-new-group-btn"
+                    onClick={() => setShowNewGroupModal(true)}
+                    className="flex-1 py-2 px-3 bg-emerald-500/10 hover:bg-emerald-500/15 text-emerald-400 border border-emerald-500/20 text-xs rounded-lg font-semibold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <Users className="w-3.5 h-3.5" /> Group Chat
+                  </button>
+                </div>
+              </div>
+
+              {/* Direct Threads */}
+              <div className="px-2 py-3">
+                <span className="text-[10px] font-bold text-gray-500 uppercase px-2 tracking-wider">Direct Channels</span>
+                <div className="space-y-1 mt-2">
+                  {profiles
+                    .filter(p => !searchQuery || p.username.toLowerCase().includes(searchQuery.toLowerCase()))
+                    .map(profile => {
+                      const isActive = activeChat?.type === 'direct' && activeChat.id === profile.id;
+                      const targetHasKeys = !!profile.public_key;
+
+                      return (
+                        <button
+                          key={profile.id}
+                          onClick={() => setActiveChat({ type: 'direct', id: profile.id })}
+                          className={`w-full p-2.5 rounded-xl text-left transition-all flex items-center gap-3 cursor-pointer ${
+                            isActive ? 'bg-[#2a3942] text-white shadow-md' : 'hover:bg-[#202c33]/60 text-gray-300'
+                          }`}
+                        >
+                          <div className="relative">
+                            <img 
+                              src={profile.avatar_url || `https://api.dicebear.com/7.x/adventurer/svg?seed=${profile.username}`} 
+                              alt={profile.username} 
+                              className="w-10 h-10 rounded-full bg-slate-800"
+                            />
+                            <span className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-[#111b21] ${
+                              targetHasKeys ? 'bg-emerald-400' : 'bg-gray-500'
+                            }`} />
+                          </div>
+
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between">
+                              <h5 className="text-xs font-semibold truncate text-[#f0f2f5]">{profile.username}</h5>
+                              {targetHasKeys ? (
+                                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" title="E2EE Active" />
+                              ) : (
+                                <Shield className="w-3.5 h-3.5 text-amber-500/60 shrink-0" title="Encryption keys not set" />
+                              )}
+                            </div>
+                            <div className="flex items-center justify-between mt-0.5">
+                              <p className="text-[10px] text-gray-400 truncate font-mono">
+                                {targetHasKeys ? 'RSA-2048 Channel Active' : 'No public catalog yet'}
+                              </p>
+                              {unreadCounts[profile.id] > 0 && (
+                                <span className="bg-emerald-500 text-black text-[9px] font-bold px-1.5 py-0.5 rounded-full shrink-0 animate-pulse select-none min-w-[16px] text-center">
+                                  {unreadCounts[profile.id]}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  
+                  {profiles.length === 0 && (
+                    <p className="text-[11px] text-gray-500 text-center py-4 italic select-none">No active direct contacts list.</p>
+                  )}
+                </div>
+              </div>
+
+              {/* Group Threads */}
+              <div className="px-2 py-3">
+                <span className="text-[10px] font-bold text-gray-500 uppercase px-2 tracking-wider">Group Channels</span>
+                <div className="space-y-1 mt-2">
+                  {groups
+                    .filter(g => !searchQuery || g.name.toLowerCase().includes(searchQuery.toLowerCase()))
+                    .map(group => {
+                      const isActive = activeChat?.type === 'group' && activeChat.id === group.id;
+
+                      return (
+                        <button
+                          key={group.id}
+                          onClick={() => setActiveChat({ type: 'group', id: group.id })}
+                          className={`w-full p-2.5 rounded-xl text-left transition-all flex items-center gap-3 cursor-pointer ${
+                            isActive ? 'bg-[#2a3942] text-white shadow-md' : 'hover:bg-[#202c33]/60 text-gray-300'
+                          }`}
+                        >
+                          <img 
+                            src={group.avatar_url || `https://api.dicebear.com/7.x/adventurer/svg?seed=${group.name}`} 
+                            alt={group.name} 
+                            className="w-10 h-10 rounded-full bg-slate-800"
+                          />
+
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between">
+                              <h5 className="text-xs font-semibold truncate text-[#f0f2f5]">{group.name}</h5>
+                              <Users className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                            </div>
+                            <div className="flex items-center justify-between mt-0.5">
+                              <p className="text-[10px] text-gray-400 truncate font-mono">
+                                Group Chat Room
+                              </p>
+                              {unreadCounts[group.id] > 0 && (
+                                <span className="bg-emerald-500 text-black text-[9px] font-bold px-1.5 py-0.5 rounded-full shrink-0 animate-pulse select-none min-w-[16px] text-center">
+                                  {unreadCounts[group.id]}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </button>
+                      );
+                    })}
+
+                  {groups.length === 0 && (
+                    <p className="text-[11px] text-gray-500 text-center py-4 italic select-none">No group conversations found.</p>
+                  )}
+                </div>
+              </div>
+
             </div>
-          </div>
-
-          {/* Direct Threads */}
-          <div className="px-2 py-3">
-            <span className="text-[10px] font-bold text-gray-500 uppercase px-2 tracking-wider">Direct Channels</span>
-            <div className="space-y-1 mt-2">
-              {profiles
-                .filter(p => !searchQuery || p.username.toLowerCase().includes(searchQuery.toLowerCase()))
-                .map(profile => {
-                  const isActive = activeChat?.type === 'direct' && activeChat.id === profile.id;
-                  const targetHasKeys = !!profile.public_key;
-
-                  return (
-                    <button
-                      key={profile.id}
-                      onClick={() => setActiveChat({ type: 'direct', id: profile.id })}
-                      className={`w-full p-2.5 rounded-xl text-left transition-all flex items-center gap-3 cursor-pointer ${
-                        isActive ? 'bg-[#2a3942] text-white shadow-md' : 'hover:bg-[#202c33]/60 text-gray-300'
-                      }`}
-                    >
-                      <div className="relative">
-                        <img 
-                          src={profile.avatar_url || `https://api.dicebear.com/7.x/adventurer/svg?seed=${profile.username}`} 
-                          alt={profile.username} 
-                          className="w-10 h-10 rounded-full bg-slate-800"
-                        />
-                        <span className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-[#111b21] ${
-                          targetHasKeys ? 'bg-emerald-400' : 'bg-gray-500'
-                        }`} />
-                      </div>
-
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between">
-                          <h5 className="text-xs font-semibold truncate text-[#f0f2f5]">{profile.username}</h5>
-                          {targetHasKeys ? (
-                            <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" title="E2EE Active" />
-                          ) : (
-                            <Shield className="w-3.5 h-3.5 text-amber-500/60 shrink-0" title="Encryption keys not set" />
-                          )}
-                        </div>
-                        <div className="flex items-center justify-between mt-0.5">
-                          <p className="text-[10px] text-gray-400 truncate font-mono">
-                            {targetHasKeys ? 'RSA-2048 Channel Active' : 'No public catalog yet'}
-                          </p>
-                          {unreadCounts[profile.id] > 0 && (
-                            <span className="bg-emerald-500 text-black text-[9px] font-bold px-1.5 py-0.5 rounded-full shrink-0 animate-pulse select-none min-w-[16px] text-center">
-                              {unreadCounts[profile.id]}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </button>
-                  );
-                })}
-              
-              {profiles.length === 0 && (
-                <p className="text-[11px] text-gray-500 text-center py-4 italic select-none">No active direct contacts list.</p>
-              )}
-            </div>
-          </div>
-
-          {/* Group Threads */}
-          <div className="px-2 py-3">
-            <span className="text-[10px] font-bold text-gray-500 uppercase px-2 tracking-wider">Group Channels</span>
-            <div className="space-y-1 mt-2">
-              {groups
-                .filter(g => !searchQuery || g.name.toLowerCase().includes(searchQuery.toLowerCase()))
-                .map(group => {
-                  const isActive = activeChat?.type === 'group' && activeChat.id === group.id;
-
-                  return (
-                    <button
-                      key={group.id}
-                      onClick={() => setActiveChat({ type: 'group', id: group.id })}
-                      className={`w-full p-2.5 rounded-xl text-left transition-all flex items-center gap-3 cursor-pointer ${
-                        isActive ? 'bg-[#2a3942] text-white shadow-md' : 'hover:bg-[#202c33]/60 text-gray-300'
-                      }`}
-                    >
-                      <img 
-                        src={group.avatar_url || `https://api.dicebear.com/7.x/adventurer/svg?seed=${group.name}`} 
-                        alt={group.name} 
-                        className="w-10 h-10 rounded-full bg-slate-800"
-                      />
-
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between">
-                          <h5 className="text-xs font-semibold truncate text-[#f0f2f5]">{group.name}</h5>
-                          <Users className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                        </div>
-                        <div className="flex items-center justify-between mt-0.5">
-                          <p className="text-[10px] text-gray-400 truncate font-mono">
-                            Group Chat Room
-                          </p>
-                          {unreadCounts[group.id] > 0 && (
-                            <span className="bg-emerald-500 text-black text-[9px] font-bold px-1.5 py-0.5 rounded-full shrink-0 animate-pulse select-none min-w-[16px] text-center">
-                              {unreadCounts[group.id]}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </button>
-                  );
-                })}
-
-              {groups.length === 0 && (
-                <p className="text-[11px] text-gray-500 text-center py-4 italic select-none">No group conversations found.</p>
-              )}
-            </div>
-          </div>
-
-        </div>
+          </>
+        )}
 
       </div>
 
@@ -1691,6 +1759,28 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
                 )}
               </div>
             </div>
+
+            {/* Call Actions */}
+            {activeChat && activeChat.type === 'direct' && (
+              <div className="flex items-center gap-2">
+                <CallButton
+                  contact={{
+                    id: activeChat.id,
+                    username: (targetInfo as any).username || 'Contact'
+                  }}
+                  onStartCall={(contact, type) => startCall(contact, type)}
+                  disabled={!!activeCall}
+                />
+                <VideoCallButton
+                  contact={{
+                    id: activeChat.id,
+                    username: (targetInfo as any).username || 'Contact'
+                  }}
+                  onStartCall={(contact, type) => startCall(contact, type)}
+                  disabled={!!activeCall}
+                />
+              </div>
+            )}
           </div>
 
           {/* Encryption Warning Bar */}
@@ -2144,6 +2234,67 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
           >
             ✕
           </button>
+        </div>
+      )}
+
+      {/* --- CALLS OVERLAY SYSTEMS --- */}
+      {/* Incoming Call Prompt */}
+      {activeCall && callRole === 'receiver' && activeCall.status === 'ringing' && (
+        <IncomingCallModal
+          call={activeCall}
+          caller={otherPartyProfile}
+          onAccept={acceptCall}
+          onReject={rejectCall}
+        />
+      )}
+
+      {/* Outgoing Call Overlay */}
+      {activeCall && callRole === 'caller' && activeCall.status === 'ringing' && (
+        <OutgoingCallScreen
+          call={activeCall}
+          recipient={otherPartyProfile}
+          onEndCall={endCall}
+        />
+      )}
+
+      {/* Active Voice Call Screen */}
+      {activeCall && activeCall.status === 'accepted' && activeCall.call_type === 'audio' && (
+        <ActiveVoiceCallScreen
+          call={activeCall}
+          recipient={otherPartyProfile}
+          remoteStream={remoteStream}
+          isMuted={isMuted}
+          isSpeakerMode={isSpeakerMode}
+          callDuration={callDuration}
+          onToggleMute={toggleMute}
+          onToggleSpeaker={() => setIsSpeakerMode(!isSpeakerMode)}
+          onEndCall={endCall}
+        />
+      )}
+
+      {/* Active Video Call Screen */}
+      {activeCall && activeCall.status === 'accepted' && activeCall.call_type === 'video' && (
+        <ActiveVideoCallScreen
+          call={activeCall}
+          recipient={otherPartyProfile}
+          localStream={localStream}
+          remoteStream={remoteStream}
+          isMuted={isMuted}
+          isCameraEnabled={isCameraEnabled}
+          callDuration={callDuration}
+          onToggleMute={toggleMute}
+          onToggleCamera={toggleCamera}
+          onSwitchCamera={switchCamera}
+          onEndCall={endCall}
+        />
+      )}
+
+      {/* Error Call Toast Alert if any */}
+      {callError && (
+        <div className="fixed bottom-4 right-4 z-50 bg-red-600 border border-red-700/50 text-white rounded-lg px-4 py-3 shadow-2xl flex items-center gap-3 animate-bounce">
+          <span className="text-lg">⚠️</span>
+          <div className="text-xs font-semibold">{callError}</div>
+          <button onClick={() => setCallError(null)} className="text-white hover:text-gray-200 ml-2">✕</button>
         </div>
       )}
 

@@ -216,4 +216,101 @@ GRANT ALL ON public.groups TO postgres, anon, authenticated, service_role;
 GRANT ALL ON public.group_members TO postgres, anon, authenticated, service_role;
 GRANT ALL ON public.messages TO postgres, anon, authenticated, service_role;
 
+-- 10. COMPLETE CALLING SCHEMAS
+CREATE TABLE IF NOT EXISTS public.calls (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  caller_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE NOT NULL,
+  receiver_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE NOT NULL,
+  call_type TEXT NOT NULL CHECK (call_type IN ('audio', 'video')),
+  status TEXT NOT NULL CHECK (status IN ('ringing', 'accepted', 'rejected', 'missed', 'busy', 'ended')),
+  started_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()),
+  ended_at TIMESTAMP WITH TIME ZONE,
+  duration INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS public.call_signals (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  call_id UUID REFERENCES public.calls(id) ON DELETE CASCADE NOT NULL,
+  sender_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE NOT NULL,
+  type TEXT NOT NULL,
+  data JSONB NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS public.call_logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  caller_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE NOT NULL,
+  receiver_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE NOT NULL,
+  call_type TEXT NOT NULL CHECK (call_type IN ('audio', 'video')),
+  status TEXT NOT NULL CHECK (status IN ('ringing', 'accepted', 'rejected', 'missed', 'busy', 'ended')),
+  duration INTEGER DEFAULT 0,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- Indexes for calling tables
+CREATE INDEX IF NOT EXISTS idx_calls_caller_id ON public.calls(caller_id);
+CREATE INDEX IF NOT EXISTS idx_calls_receiver_id ON public.calls(receiver_id);
+CREATE INDEX IF NOT EXISTS idx_call_signals_call_id ON public.call_signals(call_id);
+CREATE INDEX IF NOT EXISTS idx_call_logs_caller_id ON public.call_logs(caller_id);
+CREATE INDEX IF NOT EXISTS idx_call_logs_receiver_id ON public.call_logs(receiver_id);
+
+-- Enable Real-Time replication for calling tables
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' 
+      AND schemaname = 'public' 
+      AND tablename = 'calls'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.calls;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' 
+      AND schemaname = 'public' 
+      AND tablename = 'call_signals'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.call_signals;
+  END IF;
+END $$;
+
+-- Security Policies (RLS) for calling tables
+ALTER TABLE public.calls ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.call_signals ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.call_logs ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Participants can access own calls" ON public.calls;
+CREATE POLICY "Participants can access own calls" ON public.calls FOR ALL
+  USING (auth.uid() = caller_id OR auth.uid() = receiver_id)
+  WITH CHECK (auth.uid() = caller_id OR auth.uid() = receiver_id);
+
+DROP POLICY IF EXISTS "Participants can access own signals" ON public.call_signals;
+CREATE POLICY "Participants can access own signals" ON public.call_signals FOR ALL
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.calls
+      WHERE calls.id = call_signals.call_id
+        AND (calls.caller_id = auth.uid() OR calls.receiver_id = auth.uid())
+    )
+  )
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM public.calls
+      WHERE calls.id = call_id
+        AND (calls.caller_id = auth.uid() OR calls.receiver_id = auth.uid())
+    )
+  );
+
+DROP POLICY IF EXISTS "Participants can access own call logs" ON public.call_logs;
+CREATE POLICY "Participants can access own call logs" ON public.call_logs FOR ALL
+  USING (auth.uid() = caller_id OR auth.uid() = receiver_id)
+  WITH CHECK (auth.uid() = caller_id OR auth.uid() = receiver_id);
+
+-- Grants
+GRANT ALL ON public.calls TO postgres, anon, authenticated, service_role;
+GRANT ALL ON public.call_signals TO postgres, anon, authenticated, service_role;
+GRANT ALL ON public.call_logs TO postgres, anon, authenticated, service_role;
+
 `;
