@@ -52,6 +52,9 @@ const ParticipantVideoTile: React.FC<{
   useEffect(() => {
     if (videoRef.current && stream) {
       videoRef.current.srcObject = stream;
+      videoRef.current.play().catch((err) => {
+        console.warn('[GROUP-CALL] Video tile playback failed or was blocked:', err);
+      });
     }
   }, [stream]);
 

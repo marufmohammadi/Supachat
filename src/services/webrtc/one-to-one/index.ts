@@ -63,7 +63,7 @@ export class OneToOneWebRTCManager {
         event.streams[0].getTracks().forEach((track) => {
           track.enabled = true;
         });
-        this.onRemoteStream(event.streams[0]);
+        this.onRemoteStream(new MediaStream(event.streams[0].getTracks()));
       } else {
         console.log('[1TO1-WEBRTC] No stream found in ontrack event. Constructing manually.');
         // Avoid duplicate tracks

@@ -47,6 +47,9 @@ export const ActiveVideoCallScreen: React.FC<ActiveVideoCallScreenProps> = ({
     if (localVideoRef.current && localStream) {
       console.log('[CALLS] Binding local video stream');
       localVideoRef.current.srcObject = localStream;
+      localVideoRef.current.play().catch((err) => {
+        console.warn('[CALLS] Local video autoplay failed or was blocked:', err);
+      });
     }
   }, [localStream, isCameraEnabled]);
 
@@ -55,6 +58,9 @@ export const ActiveVideoCallScreen: React.FC<ActiveVideoCallScreenProps> = ({
     if (remoteVideoRef.current && remoteStream) {
       console.log('[CALLS] Binding remote video stream');
       remoteVideoRef.current.srcObject = remoteStream;
+      remoteVideoRef.current.play().catch((err) => {
+        console.warn('[CALLS] Remote video autoplay failed or was blocked:', err);
+      });
     }
   }, [remoteStream]);
 
