@@ -57,14 +57,22 @@ export class OneToOneWebRTCManager {
       
       event.track.enabled = true;
       
-      // Avoid duplicate tracks
-      const exists = this.remoteStream.getTracks().some(t => t.id === event.track.id);
-      if (!exists) {
-        this.remoteStream.addTrack(event.track);
+      if (event.streams && event.streams[0]) {
+        console.log('[1TO1-WEBRTC] Using native remote stream from ontrack event');
+        // Ensure all tracks in the stream are enabled
+        event.streams[0].getTracks().forEach((track) => {
+          track.enabled = true;
+        });
+        this.onRemoteStream(event.streams[0]);
+      } else {
+        console.log('[1TO1-WEBRTC] No stream found in ontrack event. Constructing manually.');
+        // Avoid duplicate tracks
+        const exists = this.remoteStream.getTracks().some(t => t.id === event.track.id);
+        if (!exists) {
+          this.remoteStream.addTrack(event.track);
+        }
+        this.onRemoteStream(new MediaStream(this.remoteStream.getTracks()));
       }
-      
-      // Re-trigger React state update with a newly instantiated stream reference
-      this.onRemoteStream(new MediaStream(this.remoteStream.getTracks()));
     };
 
     // Handle ICE Candidate generation

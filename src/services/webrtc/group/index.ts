@@ -97,7 +97,20 @@ export class GroupWebRTCManager {
       console.log(`[GROUP-WEBRTC] Received remote track from peer ${peerId}: kind=${event.track.kind}, enabled=${event.track.enabled}. Current stream track count: ${receivedTracksCount}`);
       
       event.track.enabled = true;
-      remoteStream.addTrack(event.track);
+
+      if (event.streams && event.streams[0]) {
+        console.log(`[GROUP-WEBRTC] Using native remote stream from peer ${peerId}`);
+        event.streams[0].getTracks().forEach((track) => {
+          track.enabled = true;
+        });
+        info.remoteStream = event.streams[0];
+      } else {
+        console.log(`[GROUP-WEBRTC] No stream found in ontrack event for peer ${peerId}. Constructing manually.`);
+        const exists = info.remoteStream.getTracks().some(t => t.id === event.track.id);
+        if (!exists) {
+          info.remoteStream.addTrack(event.track);
+        }
+      }
 
       // Trigger a state update by passing a fresh Map copy to the hook
       this.triggerRemoteStreamsUpdate();
