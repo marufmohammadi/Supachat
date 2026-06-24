@@ -313,4 +313,35 @@ GRANT ALL ON public.calls TO postgres, anon, authenticated, service_role;
 GRANT ALL ON public.call_signals TO postgres, anon, authenticated, service_role;
 GRANT ALL ON public.call_logs TO postgres, anon, authenticated, service_role;
 
+-- 11. PUSH TOKENS TABLE FOR CALLS NOTIFICATIONS
+CREATE TABLE IF NOT EXISTS public.push_tokens (
+  user_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE PRIMARY KEY,
+  token TEXT NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- Enable RLS
+ALTER TABLE public.push_tokens ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Allow user to manage own push token" ON public.push_tokens;
+CREATE POLICY "Allow user to manage own push token" ON public.push_tokens FOR ALL
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+-- Grants for push_tokens
+GRANT ALL ON public.push_tokens TO postgres, anon, authenticated, service_role;
+
+-- Enable Real-Time replication for push_tokens (optional but helpful)
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' 
+      AND schemaname = 'public' 
+      AND tablename = 'push_tokens'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.push_tokens;
+  END IF;
+END $$;
+
 `;

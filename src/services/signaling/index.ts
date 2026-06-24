@@ -211,5 +211,44 @@ export const signalingService = {
       console.log(`[CALLS] Unsubscribing from call updates for ${callId}`);
       supabase.removeChannel(channel);
     };
+  },
+
+  /**
+   * Registers/updates a push token in Supabase
+   */
+  async registerPushToken(userId: string, token: string): Promise<void> {
+    try {
+      const { error } = await supabase
+        .from('push_tokens')
+        .upsert({ user_id: userId, token, created_at: new Date().toISOString() }, { onConflict: 'user_id' });
+      if (error) {
+        console.warn('[PUSH] Error upserting push token:', error);
+      } else {
+        console.log('[PUSH] Successfully registered push token for user:', userId);
+      }
+    } catch (err) {
+      console.warn('[PUSH] Error registering push token:', err);
+    }
+  },
+
+  /**
+   * Retrieves the push token for a specific user
+   */
+  async getPushToken(userId: string): Promise<string | null> {
+    try {
+      const { data, error } = await supabase
+        .from('push_tokens')
+        .select('token')
+        .eq('user_id', userId)
+        .maybeSingle();
+      if (error) {
+        console.warn('[PUSH] Error fetching push token:', error);
+        return null;
+      }
+      return data?.token || null;
+    } catch (err) {
+      console.warn('[PUSH] Error getting push token:', err);
+      return null;
+    }
   }
 };
