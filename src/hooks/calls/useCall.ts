@@ -110,6 +110,7 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
   const durationIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const isBusyRef = useRef<boolean>(false);
   const iceCandidatesQueueRef = useRef<RTCIceCandidateInit[]>([]);
+  const processedSignalsRef = useRef<Set<string>>(new Set());
 
   // Keep busy state in sync
   useEffect(() => {
@@ -172,6 +173,8 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
     setOtherPartyProfile(null);
     setIsMuted(false);
     setIsCameraEnabled(true);
+    iceCandidatesQueueRef.current = [];
+    processedSignalsRef.current.clear();
   }, []);
 
   /**
@@ -394,6 +397,14 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
     // Ignore signals sent by myself
     if (signal.sender_id === currentUserId) return;
 
+    // Filter out already processed signals (crucial for catch-up/historical signals fetch)
+    if (signal.id) {
+      if (processedSignalsRef.current.has(signal.id)) {
+        return;
+      }
+      processedSignalsRef.current.add(signal.id);
+    }
+
     console.log(`[CALLS] Processing incoming signal [${signal.type}] from peer:`, signal.sender_id);
 
     try {
@@ -492,6 +503,11 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
       mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
       localStreamRef.current = mediaStream;
       setLocalStream(mediaStream);
+      console.log('[CALLS] getUserMedia successful in startCall:', {
+        localStream: mediaStream,
+        audioTracksCount: mediaStream.getAudioTracks().length,
+        videoTracksCount: mediaStream.getVideoTracks().length
+      });
     } catch (err) {
       console.warn('[CALLS] Media device access denied. Falling back to simulated media stream:', err);
       // Fallback to simulated media stream
@@ -576,6 +592,14 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
       });
       signalingCleanupRef.current = signalsCleanup;
 
+      // Fetch any pre-existing signals (SDP offer/candidates) to ensure no signal is missed due to subscription latency
+      signalingService.fetchSignals(callObj.id).then((signals) => {
+        console.log(`[CALLS] Caller catch-up fetched ${signals.length} signals`);
+        signals.forEach((sig) => {
+          handleIncomingSignal(callObj, sig);
+        });
+      });
+
     } catch (err: any) {
       console.error('[CALLS] Outgoing call flow failed:', err);
       setCallError(`Call failed: ${err.message || 'unknown error'}`);
@@ -604,6 +628,11 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
       mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
       localStreamRef.current = mediaStream;
       setLocalStream(mediaStream);
+      console.log('[CALLS] getUserMedia successful in acceptCall:', {
+        localStream: mediaStream,
+        audioTracksCount: mediaStream.getAudioTracks().length,
+        videoTracksCount: mediaStream.getVideoTracks().length
+      });
     } catch (err) {
       console.warn('[CALLS] Media device access denied during accept. Falling back to simulated media stream:', err);
       // Fallback to simulated media stream
@@ -639,6 +668,14 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
         handleIncomingSignal(updatedCall, signal);
       });
       signalingCleanupRef.current = signalsCleanup;
+
+      // Fetch any pre-existing signals (SDP offer/candidates) to ensure no signal is missed due to subscription latency
+      signalingService.fetchSignals(updatedCall.id).then((signals) => {
+        console.log(`[CALLS] Receiver catch-up fetched ${signals.length} signals`);
+        signals.forEach((sig) => {
+          handleIncomingSignal(updatedCall, sig);
+        });
+      });
 
     } catch (err) {
       console.error('[CALLS] Failed during call acceptance:', err);

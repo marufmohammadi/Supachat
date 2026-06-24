@@ -127,6 +127,23 @@ export const signalingService = {
   },
 
   /**
+   * Fetch historical signaling messages for a specific call (e.g. to catch-up on initial offers)
+   */
+  async fetchSignals(callId: string): Promise<CallSignal[]> {
+    const { data, error } = await supabase
+      .from('call_signals')
+      .select('*')
+      .eq('call_id', callId)
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      console.error('[CALLS] Error fetching signals:', error);
+      return [];
+    }
+    return data || [];
+  },
+
+  /**
    * Subscribe to WebRTC signaling messages for a specific call
    */
   subscribeToSignals(callId: string, onSignal: (signal: CallSignal) => void) {
