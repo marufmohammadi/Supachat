@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { signalingService } from '../../services/signaling';
 import { Call, CallSignal, CallStatus, CallType, Profile } from '../../types/calls';
 import { supabase } from '../../lib/supabase';
+import { OneToOneWebRTCManager } from '../../services/webrtc/one-to-one';
 
 // Helper to create simulated media stream when hardware/permission is missing or denied
 function createMockMediaStream(video: boolean): MediaStream {
@@ -104,6 +105,7 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
 
   // WebRTC & Subscriptions Refs
   const pcRef = useRef<RTCPeerConnection | null>(null);
+  const oneToOneWebRTCManagerRef = useRef<OneToOneWebRTCManager | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const signalingCleanupRef = useRef<(() => void) | null>(null);
   const callUpdatesCleanupRef = useRef<(() => void) | null>(null);
@@ -154,10 +156,11 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
     setRemoteStream(null);
 
     // Close WebRTC Peer Connection
-    if (pcRef.current) {
-      pcRef.current.close();
-      pcRef.current = null;
+    if (oneToOneWebRTCManagerRef.current) {
+      oneToOneWebRTCManagerRef.current.destroy();
+      oneToOneWebRTCManagerRef.current = null;
     }
+    pcRef.current = null;
 
     // Unsubscribe from real-time events
     if (signalingCleanupRef.current) {
@@ -314,79 +317,33 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
    * Set up WebRTC connection object
    */
   const setupPeerConnection = useCallback((callObj: Call, stream: MediaStream) => {
-    console.log('[CALLS] Setting up RTCPeerConnection');
+    console.log('[CALLS] Setting up RTCPeerConnection via OneToOneWebRTCManager');
     
-    // Config includes Google STUN server and allows for easy future configuration
-    const pcConfig: RTCConfiguration = {
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        // --- TURN SERVER SUPPORT STRUCTURE ---
-        // secure TURN servers can be configured below for production relaying:
-        /*
-        {
-          urls: 'turn:turn.example.com:3478',
-          username: 'webrtc_user',
-          credential: 'secure_password_here'
-        }
-        */
-      ]
-    };
-
-    const pc = new RTCPeerConnection(pcConfig);
-    pcRef.current = pc;
-
-    // Add local tracks to peer connection and ensure they are active/enabled
-    stream.getTracks().forEach((track) => {
-      track.enabled = true;
-      pc.addTrack(track, stream);
-      console.log(`[CALLS] Added local track to peer connection and verified active: ${track.kind}`);
-    });
-
-    // Handle incoming remote media tracks (accumulating into a single stream cleanly)
-    const remoteStreamObj = new MediaStream();
-    setRemoteStream(remoteStreamObj);
-
-    pc.ontrack = (event) => {
-      console.log('[CALLS] Received remote media track:', event.track.kind);
-      event.track.enabled = true;
-      remoteStreamObj.addTrack(event.track);
-      
-      // Re-trigger React state update with a newly instantiated stream reference
-      setRemoteStream(new MediaStream(remoteStreamObj.getTracks()));
-    };
-
-    // Handle ICE Candidate generation
-    pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        console.log('[CALLS] Generated ICE Candidate, sending to peer');
+    const rtcManager = new OneToOneWebRTCManager(
+      callObj.id,
+      currentUserId,
+      (remoteStreamObj) => {
+        setRemoteStream(remoteStreamObj);
+      },
+      (candidateJson) => {
         signalingService.sendSignal(
           callObj.id,
           currentUserId,
           'candidate',
-          event.candidate.toJSON()
+          candidateJson
         ).catch((err) => {
           console.error('[CALLS] Failed sending ICE candidate signal:', err);
         });
-      }
-    };
-
-    // Connection state debugging logs as requested
-    pc.onconnectionstatechange = () => {
-      console.log('[CALLS] connectionState changed:', pc.connectionState);
-    };
-
-    pc.onsignalingstatechange = () => {
-      console.log('[CALLS] signalingState changed:', pc.signalingState);
-    };
-
-    pc.oniceconnectionstatechange = () => {
-      console.log('[CALLS] iceConnectionState changed:', pc.iceConnectionState);
-      if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
-        console.warn('[CALLS] Peer connection lost/failed. Triggering reconnection check...');
+      },
+      () => {
         handleIceConnectionFailure();
       }
-    };
-
+    );
+    
+    oneToOneWebRTCManagerRef.current = rtcManager;
+    const pc = rtcManager.initialize(stream);
+    pcRef.current = pc;
+    
     return pc;
   }, [currentUserId, handleIceConnectionFailure]);
 

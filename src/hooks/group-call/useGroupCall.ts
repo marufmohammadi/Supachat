@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { supabase } from '../../lib/supabase';
 import { groupSignalingService } from '../../services/group-signaling';
-import { GroupWebRTCManager } from '../../services/group-webrtc';
+import { GroupWebRTCManager } from '../../services/webrtc/group';
 import { CallRoom, CallParticipant, GroupCallSignal, GroupCallType } from '../../types/group-call';
 
 interface UseGroupCallProps {

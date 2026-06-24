@@ -64,16 +64,18 @@ const ParticipantVideoTile: React.FC<{
       }`}
     >
       {/* Stream video display */}
-      {cameraEnabled && stream ? (
+      {stream ? (
         <video
           ref={videoRef}
           autoPlay
           playsInline
           muted={isLocal} // Must mute local stream to avoid audio feedback loops
-          className={`w-full h-full object-cover ${isLocal ? 'scale-x-[-1]' : ''}`}
+          className={`w-full h-full object-cover ${isLocal ? 'scale-x-[-1]' : ''} ${!cameraEnabled ? 'hidden' : ''}`}
         />
-      ) : (
-        /* Avatar placeholder when camera is disabled */
+      ) : null}
+
+      {/* Avatar placeholder when camera is disabled */}
+      {(!cameraEnabled || !stream) ? (
         <div className="absolute inset-0 flex flex-col items-center justify-center p-4">
           <div className="relative">
             {isActiveSpeaker && (
@@ -91,7 +93,7 @@ const ParticipantVideoTile: React.FC<{
             {username} {isLocal && '(You)'}
           </p>
         </div>
-      )}
+      ) : null}
 
       {/* Mic/Camera Muted overlay badges */}
       <div className="absolute bottom-3 left-3 bg-black/60 backdrop-blur-md px-2.5 py-1 rounded-full flex items-center gap-1.5 border border-white/5 text-xs text-white">

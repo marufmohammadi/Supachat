@@ -1,4 +1,4 @@
-import { groupSignalingService } from '../group-signaling';
+import { groupSignalingService } from '../../group-signaling';
 
 export interface PeerConnectionInfo {
   peerId: string;
@@ -36,13 +36,16 @@ export class GroupWebRTCManager {
     
     // For all existing peer connections, update their local tracks if they don't have them
     this.peerConnections.forEach((info) => {
-      stream.getTracks().forEach((track) => {
+      const localTracks = stream.getTracks();
+      console.log(`[GROUP-WEBRTC] Syncing local tracks. Total count: ${localTracks.length} for peer ${info.peerId}`);
+      
+      localTracks.forEach((track) => {
         const senders = info.pc.getSenders();
         const hasTrack = senders.some((s) => s.track?.id === track.id || s.track?.kind === track.kind);
         if (!hasTrack) {
           track.enabled = true;
           info.pc.addTrack(track, stream);
-          console.log(`[GROUP-WEBRTC] Added track ${track.kind} to peer connection for ${info.peerId}`);
+          console.log(`[GROUP-WEBRTC] Added track [kind=${track.kind}] to peer connection for ${info.peerId}`);
         }
       });
     });
@@ -79,16 +82,20 @@ export class GroupWebRTCManager {
 
     // 1. Add local tracks
     if (this.localStream) {
-      this.localStream.getTracks().forEach((track) => {
+      const localTracks = this.localStream.getTracks();
+      console.log(`[GROUP-WEBRTC] Adding local tracks. Total count: ${localTracks.length} for peer ${peerId}`);
+      localTracks.forEach((track) => {
         track.enabled = true;
         pc.addTrack(track, this.localStream!);
+        console.log(`[GROUP-WEBRTC] Local track [kind=${track.kind}] added to pc for ${peerId}`);
       });
-      console.log(`[GROUP-WEBRTC] Added local tracks to peer connection for ${peerId}`);
     }
 
     // 2. Handle remote tracks
     pc.ontrack = (event) => {
-      console.log(`[GROUP-WEBRTC] Received remote track from peer ${peerId}:`, event.track.kind);
+      const receivedTracksCount = event.streams[0]?.getTracks().length || 0;
+      console.log(`[GROUP-WEBRTC] Received remote track from peer ${peerId}: kind=${event.track.kind}, enabled=${event.track.enabled}. Current stream track count: ${receivedTracksCount}`);
+      
       event.track.enabled = true;
       remoteStream.addTrack(event.track);
 
@@ -121,6 +128,10 @@ export class GroupWebRTCManager {
 
     pc.oniceconnectionstatechange = () => {
       console.log(`[GROUP-WEBRTC] ICE connection state for ${peerId}:`, pc.iceConnectionState);
+    };
+
+    pc.onsignalingstatechange = () => {
+      console.log(`[GROUP-WEBRTC] Signaling state for ${peerId}:`, pc.signalingState);
     };
 
     // 5. Create Offer if initiating
@@ -275,7 +286,7 @@ export class GroupWebRTCManager {
   private triggerRemoteStreamsUpdate() {
     const streamsMap = new Map<string, MediaStream>();
     this.peerConnections.forEach((info, peerId) => {
-      // Only include streams that have active tracks to keep UI clean
+      // Include streams that have any active tracks (audio or video)
       if (info.remoteStream.getTracks().length > 0) {
         streamsMap.set(peerId, info.remoteStream);
       }
