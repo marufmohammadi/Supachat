@@ -113,10 +113,15 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
   const isBusyRef = useRef<boolean>(false);
   const iceCandidatesQueueRef = useRef<RTCIceCandidateInit[]>([]);
   const processedSignalsRef = useRef<Set<string>>(new Set());
+  const isCallEndingRef = useRef<boolean>(false);
 
   // Keep busy state in sync
   useEffect(() => {
-    isBusyRef.current = !!activeCall && activeCall.status !== 'ended' && activeCall.status !== 'rejected' && activeCall.status !== 'missed' && activeCall.status !== 'busy';
+    isBusyRef.current = !!activeCall && 
+      activeCall.status !== 'ended' && 
+      activeCall.status !== 'rejected' && 
+      activeCall.status !== 'missed' && 
+      activeCall.status !== 'busy';
   }, [activeCall]);
 
   /**
@@ -133,10 +138,15 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
   }, [loadCallHistory]);
 
   /**
-   * Clean up WebRTC peer connection and media tracks
+   * Clean up WebRTC peer connection and media tracks (shared cleanup function)
    */
-  const cleanupCallResources = useCallback(() => {
-    console.log('[CALLS] Cleaning up call resources');
+  const cleanupCallResources = useCallback((force = false) => {
+    if (isCallEndingRef.current && !force) {
+      console.log('[CALLS] Shared cleanup function already in progress, skipping duplicate.');
+      return;
+    }
+    isCallEndingRef.current = true;
+    console.log('[CALLS] Running shared cleanup function');
     
     // Stop duration timer
     if (durationIntervalRef.current) {
@@ -147,8 +157,12 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
     // Stop all media tracks
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((track) => {
-        track.stop();
-        console.log(`[CALLS] Stopped track: ${track.kind}`);
+        try {
+          track.stop();
+          console.log(`[CALLS] Stopped track: ${track.kind}`);
+        } catch (e) {
+          console.warn('[CALLS] Error stopping track:', e);
+        }
       });
       localStreamRef.current = null;
     }
@@ -157,27 +171,48 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
 
     // Close WebRTC Peer Connection
     if (oneToOneWebRTCManagerRef.current) {
-      oneToOneWebRTCManagerRef.current.destroy();
+      try {
+        oneToOneWebRTCManagerRef.current.destroy();
+      } catch (e) {
+        console.warn('[CALLS] Error destroying WebRTC manager:', e);
+      }
       oneToOneWebRTCManagerRef.current = null;
     }
     pcRef.current = null;
 
     // Unsubscribe from real-time events
     if (signalingCleanupRef.current) {
-      signalingCleanupRef.current();
+      try {
+        signalingCleanupRef.current();
+      } catch (e) {
+        console.warn('[CALLS] Error in signaling cleanup:', e);
+      }
       signalingCleanupRef.current = null;
     }
     if (callUpdatesCleanupRef.current) {
-      callUpdatesCleanupRef.current();
+      try {
+        callUpdatesCleanupRef.current();
+      } catch (e) {
+        console.warn('[CALLS] Error in call updates cleanup:', e);
+      }
       callUpdatesCleanupRef.current = null;
     }
 
+    // Reset every call-related state variable
+    setActiveCall(null);
     setCallRole(null);
     setOtherPartyProfile(null);
     setIsMuted(false);
     setIsCameraEnabled(true);
+    setIsSpeakerMode(true);
+    setFacingMode('user');
+    setCallDuration(0);
+    
     iceCandidatesQueueRef.current = [];
     processedSignalsRef.current.clear();
+    
+    // Reset ending flag for subsequent calls
+    isCallEndingRef.current = false;
   }, []);
 
   /**
@@ -185,40 +220,57 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
    */
   const endCall = useCallback(async (customStatus?: CallStatus) => {
     if (!activeCall) return;
+    if (isCallEndingRef.current) {
+      console.log('[CALLS] endCall was called but call is already ending. Skipping.');
+      return;
+    }
+    isCallEndingRef.current = true;
 
-    const finalStatus = customStatus || (activeCall.status === 'accepted' ? 'ended' : 'missed');
+    const finalStatus = customStatus || (
+      activeCall.status === 'accepted' ? 'ended' : (callRole === 'caller' ? 'missed' : 'rejected')
+    );
     const duration = callDuration;
+    const callId = activeCall.id;
+    const callerId = activeCall.caller_id;
+    const receiverId = activeCall.receiver_id;
+    const callType = activeCall.call_type;
+    const isAccepted = activeCall.status === 'accepted';
     
-    console.log(`[CALLS] Ending call ${activeCall.id} with status ${finalStatus}, duration ${duration}`);
+    console.log(`[CALLS] Ending call ${callId} with status ${finalStatus}, duration ${duration}`);
     
     try {
-      // Send a hangup signal so other end knows instantly if they haven't received the table update
-      if (activeCall.status === 'accepted') {
-        await signalingService.sendSignal(activeCall.id, currentUserId, 'hangup', { reason: 'user_ended' }).catch(() => {});
+      // Send a hangup signal so other end knows instantly
+      if (isAccepted) {
+        await signalingService.sendSignal(callId, currentUserId, 'hangup', { reason: 'user_ended' }).catch(() => {});
+      } else {
+        await signalingService.sendSignal(callId, currentUserId, 'hangup', { reason: 'user_cancelled_or_rejected' }).catch(() => {});
       }
 
       // Update calls table status
-      await signalingService.updateCallStatus(activeCall.id, finalStatus, {
+      await signalingService.updateCallStatus(callId, finalStatus, {
         ended_at: new Date().toISOString(),
         duration
+      }).catch((err) => {
+        console.warn('[CALLS] Ignored error during status update (might already be updated):', err);
       });
 
       // Write into the permanent call logs
       await signalingService.logCall(
-        activeCall.caller_id,
-        activeCall.receiver_id,
-        activeCall.call_type,
+        callerId,
+        receiverId,
+        callType,
         finalStatus,
         duration
-      );
+      ).catch((err) => {
+        console.warn('[CALLS] Ignored error during call log save:', err);
+      });
     } catch (err) {
       console.error('[CALLS] Error during call termination database update:', err);
     } finally {
-      cleanupCallResources();
-      setActiveCall(null);
+      cleanupCallResources(true);
       loadCallHistory();
     }
-  }, [activeCall, callDuration, currentUserId, cleanupCallResources, loadCallHistory]);
+  }, [activeCall, callDuration, currentUserId, callRole, cleanupCallResources, loadCallHistory]);
 
   /**
    * Toggle local microphone audio track
@@ -343,9 +395,22 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
     oneToOneWebRTCManagerRef.current = rtcManager;
     const pc = rtcManager.initialize(stream);
     pcRef.current = pc;
+
+    // Listen to connectionState to detect if the peer disconnected unexpectedly
+    const originalOnConnectionStateChange = pc.onconnectionstatechange;
+    pc.onconnectionstatechange = () => {
+      if (originalOnConnectionStateChange) {
+        originalOnConnectionStateChange.call(pc);
+      }
+      console.log(`[CALLS] Connection state changed to: ${pc.connectionState}`);
+      if (pc.connectionState === 'failed') {
+        console.warn('[CALLS] Peer connection failed. Ending call...');
+        endCall('ended');
+      }
+    };
     
     return pc;
-  }, [currentUserId, handleIceConnectionFailure]);
+  }, [currentUserId, handleIceConnectionFailure, endCall]);
 
   /**
    * Handle WebRTC signal messages received during call setup
@@ -509,6 +574,12 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
       const callUpdatesCleanup = signalingService.subscribeToCallUpdates(callObj.id, (updatedCall) => {
         console.log('[CALLS] Real-time Call Update received:', updatedCall.status);
         
+        // Ignore duplicate events if cleanup already started
+        if (isCallEndingRef.current) {
+          console.log('[CALLS] Real-time Call Update ignored: cleanup already in progress');
+          return;
+        }
+
         setActiveCall(updatedCall);
 
         if (updatedCall.status === 'accepted') {
@@ -520,24 +591,23 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
             }, 1000);
           }
         } 
-        else if (updatedCall.status === 'rejected') {
-          console.log('[CALLS] Call was REJECTED by peer');
-          setCallError('Call rejected by recipient');
-          cleanupCallResources();
-          setActiveCall(null);
+        else if (
+          updatedCall.status === 'ended' ||
+          updatedCall.status === 'rejected' ||
+          updatedCall.status === 'missed' ||
+          (updatedCall.status as any) === 'cancelled'
+        ) {
+          console.log(`[CALLS] Call reached ending status: ${updatedCall.status}`);
+          if (updatedCall.status === 'rejected') {
+            setCallError('Call rejected by recipient');
+          }
+          cleanupCallResources(true);
           loadCallHistory();
-        } 
+        }
         else if (updatedCall.status === 'busy') {
           console.log('[CALLS] User is busy in another call');
           setCallError('Recipient is currently busy on another call');
-          cleanupCallResources();
-          setActiveCall(null);
-          loadCallHistory();
-        } 
-        else if (updatedCall.status === 'ended') {
-          console.log('[CALLS] Call ended by recipient');
-          cleanupCallResources();
-          setActiveCall(null);
+          cleanupCallResources(true);
           loadCallHistory();
         }
       });
@@ -739,12 +809,23 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
     // Subscribe to call updates to watch if caller cancels or hangs up
     const callUpdatesCleanup = signalingService.subscribeToCallUpdates(incomingCall.id, (updatedCall) => {
       console.log('[CALLS] Incoming Call state updated in DB:', updatedCall.status);
+      
+      // Ignore duplicate events if cleanup already started
+      if (isCallEndingRef.current) {
+        console.log('[CALLS] Real-time Incoming Call Update ignored: cleanup already in progress');
+        return;
+      }
+
       setActiveCall(updatedCall);
 
-      if (updatedCall.status === 'ended' || updatedCall.status === 'rejected') {
-        console.log('[CALLS] Call cancelled by caller or ended');
-        cleanupCallResources();
-        setActiveCall(null);
+      if (
+        updatedCall.status === 'ended' ||
+        updatedCall.status === 'rejected' ||
+        updatedCall.status === 'missed' ||
+        (updatedCall.status as any) === 'cancelled'
+      ) {
+        console.log(`[CALLS] Incoming call reached ending status: ${updatedCall.status}`);
+        cleanupCallResources(true);
         loadCallHistory();
       }
     });

@@ -1,5 +1,90 @@
 import { supabase } from '../../lib/supabase';
 import { CallRoom, CallParticipant, GroupCallSignal, GroupCallType } from '../../types/group-call';
+import { RealtimeChannel } from '@supabase/supabase-js';
+
+class GroupCallRealtimeManagerClass {
+  private channelsMap = new Map<string, {
+    channel: RealtimeChannel;
+    callbacks: Set<(payload: any) => void>;
+  }>();
+
+  getOrCreateChannel(
+    channelName: string,
+    onPayload: (payload: any) => void,
+    setupOn: (channel: RealtimeChannel, handler: (payload: any) => void) => RealtimeChannel
+  ): { channel: RealtimeChannel; unsubscribe: () => void } {
+    console.log(`[REALTIME-MANAGER] getOrCreateChannel: ${channelName}`);
+
+    let record = this.channelsMap.get(channelName);
+
+    // If not in our map, check supabase.getChannels() to see if it exists there
+    if (!record) {
+      const existingChannels = supabase.getChannels();
+      const match = existingChannels.find(
+        (ch) => ch.topic === channelName || ch.topic === `realtime:${channelName}`
+      );
+      if (match) {
+        console.log(`[REALTIME-MANAGER] Found stale/existing channel in Supabase for: ${channelName}. Removing it to rebuild cleanly.`);
+        supabase.removeChannel(match);
+      }
+    }
+
+    if (!record) {
+      const callbacks = new Set<(payload: any) => void>();
+      callbacks.add(onPayload);
+
+      // Define the single multiplexed handler that calls all registered callbacks
+      const multiplexedHandler = (payload: any) => {
+        console.log(`[REALTIME-MANAGER] Multiplexed event triggered for: ${channelName}, callbacks count: ${callbacks.size}`);
+        callbacks.forEach((cb) => {
+          try {
+            cb(payload);
+          } catch (err) {
+            console.error(`[REALTIME-MANAGER] Error in callback for ${channelName}:`, err);
+          }
+        });
+      };
+
+      // Create a fresh channel
+      let channel = supabase.channel(channelName);
+
+      // Register the postgres_changes listener BEFORE subscribing
+      channel = setupOn(channel, multiplexedHandler);
+
+      console.log(`[REALTIME-MANAGER] Subscribing to new channel: ${channelName}`);
+      channel.subscribe();
+
+      record = {
+        channel,
+        callbacks
+      };
+      this.channelsMap.set(channelName, record);
+    } else {
+      console.log(`[REALTIME-MANAGER] Reusing existing active channel: ${channelName}. Adding callback.`);
+      record.callbacks.add(onPayload);
+    }
+
+    const currentRecord = record;
+
+    return {
+      channel: currentRecord.channel,
+      unsubscribe: () => {
+        console.log(`[REALTIME-MANAGER] Unsubscribe requested for: ${channelName}`);
+        currentRecord.callbacks.delete(onPayload);
+
+        if (currentRecord.callbacks.size === 0) {
+          console.log(`[REALTIME-MANAGER] No more callbacks for ${channelName}. Removing channel entirely.`);
+          supabase.removeChannel(currentRecord.channel);
+          this.channelsMap.delete(channelName);
+        } else {
+          console.log(`[REALTIME-MANAGER] Channel ${channelName} still has ${currentRecord.callbacks.size} callbacks remaining.`);
+        }
+      }
+    };
+  }
+}
+
+export const GroupCallRealtimeManager = new GroupCallRealtimeManagerClass();
 
 export const groupSignalingService = {
   /**
@@ -197,114 +282,118 @@ export const groupSignalingService = {
    * Subscribes to real-time status changes of a call room
    */
   subscribeToRoomUpdates(roomId: string, onUpdate: (room: CallRoom) => void): () => void {
-    const channel = supabase
-      .channel(`group_room_${roomId}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'call_rooms',
-          filter: `id=eq.${roomId}`
-        },
-        (payload) => {
-          onUpdate(payload.new as CallRoom);
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
+    const channelName = `group_room_${roomId}`;
+    const { unsubscribe } = GroupCallRealtimeManager.getOrCreateChannel(
+      channelName,
+      onUpdate,
+      (channel, handler) => {
+        return channel.on(
+          'postgres_changes',
+          {
+            event: 'UPDATE',
+            schema: 'public',
+            table: 'call_rooms',
+            filter: `id=eq.${roomId}`
+          },
+          (payload) => {
+            handler(payload.new as CallRoom);
+          }
+        );
+      }
+    );
+    return unsubscribe;
   },
 
   /**
    * Subscribes to dynamic group call signaling messages targeted for current user
    */
   subscribeToGroupSignals(roomId: string, userId: string, onSignal: (signal: GroupCallSignal) => void): () => void {
-    const channel = supabase
-      .channel(`group_signals_${roomId}_${userId}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'group_call_signals',
-          filter: `room_id=eq.${roomId}`
-        },
-        (payload) => {
-          const sig = payload.new as GroupCallSignal;
-          if (sig.receiver_id === userId) {
-            onSignal(sig);
+    const channelName = `group_signals_${roomId}_${userId}`;
+    const { unsubscribe } = GroupCallRealtimeManager.getOrCreateChannel(
+      channelName,
+      onSignal,
+      (channel, handler) => {
+        return channel.on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'group_call_signals',
+            filter: `room_id=eq.${roomId}`
+          },
+          (payload) => {
+            const sig = payload.new as GroupCallSignal;
+            if (sig.receiver_id === userId) {
+              handler(sig);
+            }
           }
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
+        );
+      }
+    );
+    return unsubscribe;
   },
 
   /**
    * Subscribes to dynamic participant actions (joining, leaving, muting, camera toggle)
    */
   subscribeToParticipants(roomId: string, onUpdate: () => void): () => void {
-    const channel = supabase
-      .channel(`group_participants_${roomId}`)
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'call_participants',
-          filter: `room_id=eq.${roomId}`
-        },
-        () => {
-          onUpdate();
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
+    const channelName = `group_participants_${roomId}`;
+    const { unsubscribe } = GroupCallRealtimeManager.getOrCreateChannel(
+      channelName,
+      onUpdate,
+      (channel, handler) => {
+        return channel.on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'call_participants',
+            filter: `room_id=eq.${roomId}`
+          },
+          () => {
+            handler(undefined);
+          }
+        );
+      }
+    );
+    return unsubscribe;
   },
 
   /**
    * Subscribes to new call rooms created in groups where the user is a member
    */
   subscribeToIncomingGroupCalls(userId: string, onIncoming: (room: CallRoom) => void): () => void {
-    const channel = supabase
-      .channel(`incoming_group_calls_${userId}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'call_rooms'
-        },
-        async (payload) => {
-          const newRoom = payload.new as CallRoom;
-          if (newRoom.status === 'ringing' && newRoom.created_by !== userId) {
-            // Verify membership
-            const { data: member, error } = await supabase
-              .from('group_members')
-              .select('id')
-              .eq('group_id', newRoom.group_id)
-              .eq('user_id', userId)
-              .maybeSingle();
+    const channelName = `incoming_group_calls_${userId}`;
+    const { unsubscribe } = GroupCallRealtimeManager.getOrCreateChannel(
+      channelName,
+      onIncoming,
+      (channel, handler) => {
+        return channel.on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'call_rooms'
+          },
+          async (payload) => {
+            const newRoom = payload.new as CallRoom;
+            if (newRoom.status === 'ringing' && newRoom.created_by !== userId) {
+              // Verify membership
+              const { data: member, error } = await supabase
+                .from('group_members')
+                .select('id')
+                .eq('group_id', newRoom.group_id)
+                .eq('user_id', userId)
+                .maybeSingle();
 
-            if (!error && member) {
-              onIncoming(newRoom);
+              if (!error && member) {
+                handler(newRoom);
+              }
             }
           }
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
+        );
+      }
+    );
+    return unsubscribe;
   }
 };

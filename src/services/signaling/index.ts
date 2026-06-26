@@ -43,15 +43,19 @@ export const signalingService = {
       .from('calls')
       .update(payload)
       .eq('id', callId)
-      .select()
-      .single();
+      .select();
 
     if (error) {
       console.error('[CALLS] Error updating call status:', error);
       throw error;
     }
 
-    return data as Call;
+    if (!data || data.length === 0) {
+      console.warn(`[CALLS] updateCallStatus returned no rows for callId: ${callId}. Using fallback.`);
+      return { id: callId, status, ...payload } as Call;
+    }
+
+    return data[0] as Call;
   },
 
   /**
@@ -147,8 +151,15 @@ export const signalingService = {
    * Subscribe to WebRTC signaling messages for a specific call
    */
   subscribeToSignals(callId: string, onSignal: (signal: CallSignal) => void) {
+    const channelName = `call_signals:${callId}`;
+    const existing = supabase.getChannels().find(c => c.topic === channelName || c.topic === `realtime:${channelName}`);
+    if (existing) {
+      console.log(`[CALLS] Removing existing channel for: ${channelName}`);
+      supabase.removeChannel(existing);
+    }
+
     const channel = supabase
-      .channel(`call_signals:${callId}`)
+      .channel(channelName)
       .on(
         'postgres_changes',
         {
@@ -175,8 +186,15 @@ export const signalingService = {
    * Listen for incoming calls for the current user
    */
   subscribeToIncomingCalls(userId: string, onCall: (call: Call) => void) {
+    const channelName = `incoming_calls:${userId}`;
+    const existing = supabase.getChannels().find(c => c.topic === channelName || c.topic === `realtime:${channelName}`);
+    if (existing) {
+      console.log(`[CALLS] Removing existing channel for: ${channelName}`);
+      supabase.removeChannel(existing);
+    }
+
     const channel = supabase
-      .channel(`incoming_calls:${userId}`)
+      .channel(channelName)
       .on(
         'postgres_changes',
         {
@@ -206,8 +224,15 @@ export const signalingService = {
    * Listen for status updates on a specific call
    */
   subscribeToCallUpdates(callId: string, onUpdate: (call: Call) => void) {
+    const channelName = `call_updates:${callId}`;
+    const existing = supabase.getChannels().find(c => c.topic === channelName || c.topic === `realtime:${channelName}`);
+    if (existing) {
+      console.log(`[CALLS] Removing existing channel for: ${channelName}`);
+      supabase.removeChannel(existing);
+    }
+
     const channel = supabase
-      .channel(`call_updates:${callId}`)
+      .channel(channelName)
       .on(
         'postgres_changes',
         {
