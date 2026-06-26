@@ -141,6 +141,7 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
    * Clean up WebRTC peer connection and media tracks (shared cleanup function)
    */
   const cleanupCallResources = useCallback((force = false) => {
+    console.log('[CALLS] cleanupCallResources executed');
     if (isCallEndingRef.current && !force) {
       console.log('[CALLS] Shared cleanup function already in progress, skipping duplicate.');
       return;
@@ -220,6 +221,9 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
    */
   const endCall = useCallback(async (customStatus?: CallStatus) => {
     if (!activeCall) return;
+    if (callRole === 'receiver') {
+      console.log('[CALLS] Receiver pressed End');
+    }
     if (isCallEndingRef.current) {
       console.log('[CALLS] endCall was called but call is already ending. Skipping.');
       return;
@@ -246,11 +250,21 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
         await signalingService.sendSignal(callId, currentUserId, 'hangup', { reason: 'user_cancelled_or_rejected' }).catch(() => {});
       }
 
+      if (callRole === 'receiver') {
+        console.log('[CALLS] Updating call status...');
+      }
+
       // Update calls table status
       await signalingService.updateCallStatus(callId, finalStatus, {
         ended_at: new Date().toISOString(),
         duration
+      }).then((res) => {
+        if (callRole === 'receiver') {
+          console.log('[CALLS] Update success');
+        }
+        return res;
       }).catch((err) => {
+        console.error('[CALLS] Error updating call status in DB:', err);
         console.warn('[CALLS] Ignored error during status update (might already be updated):', err);
       });
 
@@ -262,6 +276,7 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
         finalStatus,
         duration
       ).catch((err) => {
+        console.error('[CALLS] Error saving call log in DB:', err);
         console.warn('[CALLS] Ignored error during call log save:', err);
       });
     } catch (err) {
@@ -489,7 +504,7 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
       } 
       else if (signal.type === 'hangup') {
         console.log('[CALLS] Peer ended call via signal');
-        cleanupCallResources();
+        cleanupCallResources(true);
         setActiveCall(null);
         loadCallHistory();
       }
@@ -572,6 +587,10 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
 
       // 4. Subscribe to Real-time updates for call state (e.g. accepted, rejected, busy)
       const callUpdatesCleanup = signalingService.subscribeToCallUpdates(callObj.id, (updatedCall) => {
+        if (callRole === 'caller') {
+          console.log('[CALLS] Realtime event received');
+          console.log(`[CALLS] New call status: ${updatedCall.status}`);
+        }
         console.log('[CALLS] Real-time Call Update received:', updatedCall.status);
         
         // Ignore duplicate events if cleanup already started
