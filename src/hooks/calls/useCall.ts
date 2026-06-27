@@ -147,6 +147,7 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
       return;
     }
     isCallEndingRef.current = true;
+    console.log('[CALLS] Cleanup started');
     console.log('[CALLS] Running shared cleanup function');
     
     // Stop duration timer
@@ -201,6 +202,8 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
 
     // Reset every call-related state variable
     setActiveCall(null);
+    console.log('[CALLS] activeCall set to null');
+    console.log('[CALLS] Call screen closed');
     setCallRole(null);
     setOtherPartyProfile(null);
     setIsMuted(false);
@@ -214,6 +217,7 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
     
     // Reset ending flag for subsequent calls
     isCallEndingRef.current = false;
+    console.log('[CALLS] Cleanup finished');
   }, []);
 
   /**
@@ -221,7 +225,9 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
    */
   const endCall = useCallback(async (customStatus?: CallStatus) => {
     if (!activeCall) return;
-    if (callRole === 'receiver') {
+    if (callRole === 'caller') {
+      console.log('[CALLS] Caller pressed End');
+    } else if (callRole === 'receiver') {
       console.log('[CALLS] Receiver pressed End');
     }
     if (isCallEndingRef.current) {
@@ -230,7 +236,8 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
     }
     isCallEndingRef.current = true;
 
-    const finalStatus = customStatus || (
+    // Ensure customStatus is a valid string of type CallStatus and not a React/synthetic event object
+    const finalStatus = (typeof customStatus === 'string' ? customStatus : null) || (
       activeCall.status === 'accepted' ? 'ended' : (callRole === 'caller' ? 'missed' : 'rejected')
     );
     const duration = callDuration;
@@ -243,15 +250,21 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
     console.log(`[CALLS] Ending call ${callId} with status ${finalStatus}, duration ${duration}`);
     
     try {
-      // Send a hangup signal so other end knows instantly
-      if (isAccepted) {
-        await signalingService.sendSignal(callId, currentUserId, 'hangup', { reason: 'user_ended' }).catch(() => {});
-      } else {
-        await signalingService.sendSignal(callId, currentUserId, 'hangup', { reason: 'user_cancelled_or_rejected' }).catch(() => {});
+      if (callRole === 'caller') {
+        console.log('[CALLS] Updating call status');
+      } else if (callRole === 'receiver') {
+        console.log('[CALLS] Updating call status...');
       }
 
-      if (callRole === 'receiver') {
-        console.log('[CALLS] Updating call status...');
+      // Send a hangup signal so other end knows instantly
+      if (isAccepted) {
+        await signalingService.sendSignal(callId, currentUserId, 'hangup', { reason: 'user_ended' }).then(() => {
+          if (callRole === 'caller') console.log('[CALLS] Realtime event sent');
+        }).catch(() => {});
+      } else {
+        await signalingService.sendSignal(callId, currentUserId, 'hangup', { reason: 'user_cancelled_or_rejected' }).then(() => {
+          if (callRole === 'caller') console.log('[CALLS] Realtime event sent');
+        }).catch(() => {});
       }
 
       // Update calls table status
@@ -261,11 +274,12 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
       }).then((res) => {
         if (callRole === 'receiver') {
           console.log('[CALLS] Update success');
+        } else if (callRole === 'caller') {
+          console.log('[CALLS] Database update success');
         }
         return res;
       }).catch((err) => {
-        console.error('[CALLS] Error updating call status in DB:', err);
-        console.warn('[CALLS] Ignored error during status update (might already be updated):', err);
+        console.warn('[CALLS] Error updating call status in DB:', err);
       });
 
       // Write into the permanent call logs
@@ -276,8 +290,7 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
         finalStatus,
         duration
       ).catch((err) => {
-        console.error('[CALLS] Error saving call log in DB:', err);
-        console.warn('[CALLS] Ignored error during call log save:', err);
+        console.warn('[CALLS] Error saving call log in DB:', err);
       });
     } catch (err) {
       console.error('[CALLS] Error during call termination database update:', err);
@@ -504,8 +517,11 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
       } 
       else if (signal.type === 'hangup') {
         console.log('[CALLS] Peer ended call via signal');
+        console.log('[CALLS] Realtime event received');
+        console.log('[CALLS] New status: ended');
+        console.log('[CALLS] cleanupCallResources started');
         cleanupCallResources(true);
-        setActiveCall(null);
+        console.log('[CALLS] cleanupCallResources finished');
         loadCallHistory();
       }
     } catch (err) {
@@ -844,7 +860,11 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
         (updatedCall.status as any) === 'cancelled'
       ) {
         console.log(`[CALLS] Incoming call reached ending status: ${updatedCall.status}`);
+        console.log('[CALLS] Realtime event received');
+        console.log(`[CALLS] New status: ${updatedCall.status}`);
+        console.log('[CALLS] cleanupCallResources started');
         cleanupCallResources(true);
+        console.log('[CALLS] cleanupCallResources finished');
         loadCallHistory();
       }
     });
