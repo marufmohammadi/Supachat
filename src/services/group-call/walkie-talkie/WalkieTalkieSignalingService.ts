@@ -226,25 +226,57 @@ export const walkieTalkieSignalingService = {
    */
   subscribeToIncomingWalkieTalkies(userId: string, onIncoming: (room: WalkieTalkieRoom) => void): () => void {
     const channelName = `user_walkie_talkie_notifications:${userId}`;
-    console.log(`[WALKIE-TALKIE] Setting up independent real-time broadcast walkie-talkie subscription on: ${channelName}`);
+    console.log(`[WALKIE-TALKIE] Setting up dual-mode walkie-talkie subscription for user: ${userId}`);
 
-    // Create standard broadcast receiver
-    const channel = supabase.channel(channelName);
+    // Mode 1: Independent real-time broadcast channel receiver
+    const broadcastChannel = supabase.channel(channelName);
     
-    channel.on('broadcast', { event: 'incoming_walkie_talkie' }, (payload) => {
+    broadcastChannel.on('broadcast', { event: 'incoming_walkie_talkie' }, (payload) => {
       console.log('[WALKIE-TALKIE] Received real-time broadcast incoming walkie-talkie:', payload);
       if (payload.payload) {
         onIncoming(payload.payload as WalkieTalkieRoom);
       }
     });
 
-    channel.subscribe((status) => {
-      console.log(`[WALKIE-TALKIE] Subscription status for ${channelName}: ${status}`);
+    broadcastChannel.subscribe((status) => {
+      console.log(`[WALKIE-TALKIE] Broadcast subscription status for ${channelName}: ${status}`);
+    });
+
+    // Mode 2: Re-use the existing postgres_changes DB replication channel as a robust dual-mode fallback
+    const pgChannelName = `incoming_walkie_talkies_pg_${userId}`;
+    const pgChannel = supabase.channel(pgChannelName);
+    pgChannel.on(
+      'postgres_changes',
+      {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'walkie_talkie_rooms'
+      },
+      async (payload) => {
+        const newRoom = payload.new as WalkieTalkieRoom;
+        if (newRoom.status === 'active' && newRoom.created_by !== userId) {
+          // Verify membership
+          const { data: member, error } = await supabase
+            .from('group_members')
+            .select('id')
+            .eq('group_id', newRoom.group_id)
+            .eq('user_id', userId)
+            .maybeSingle();
+
+          if (!error && member) {
+            console.log('[WALKIE-TALKIE] Received incoming walkie-talkie via DB replication:', newRoom);
+            onIncoming(newRoom);
+          }
+        }
+      }
+    ).subscribe((status) => {
+      console.log(`[WALKIE-TALKIE] Postgres replication subscription status for ${pgChannelName}: ${status}`);
     });
 
     return () => {
-      console.log(`[WALKIE-TALKIE] Removing independent broadcast walkie-talkie channel: ${channelName}`);
-      supabase.removeChannel(channel);
+      console.log(`[WALKIE-TALKIE] Cleaning up dual-mode incoming walkie-talkie subscriptions for user: ${userId}`);
+      supabase.removeChannel(broadcastChannel);
+      supabase.removeChannel(pgChannel);
     };
   },
 

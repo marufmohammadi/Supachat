@@ -89,32 +89,21 @@ export const useWalkieTalkie = ({ currentUserId }: UseWalkieTalkieProps) => {
     setIsRoomLocked(false);
 
     try {
-      // 1. Fetch user role in the group
-      console.log(`[USE-WALKIE-TALKIE] Loading user role for group=${groupId}...`);
-      
-      // Check if user is group creator/owner
-      const { data: groupData, error: groupErr } = await supabase
-        .from('groups')
-        .select('created_by')
-        .eq('id', groupId)
-        .maybeSingle();
+      // 1. Fetch user role in the group in PARALLEL to minimize latency
+      console.log(`[USE-WALKIE-TALKIE] Loading group metadata and user membership for role determination...`);
+      const [groupRes, memberRes] = await Promise.all([
+        supabase.from('groups').select('created_by').eq('id', groupId).maybeSingle(),
+        supabase.from('group_members').select('role').eq('group_id', groupId).eq('user_id', currentUserId).maybeSingle()
+      ]);
+
+      const groupData = groupRes.data;
+      const memberData = memberRes.data;
 
       let role: 'owner' | 'admin' | 'member' = 'member';
-
       if (groupData && groupData.created_by === currentUserId) {
         role = 'owner';
-      } else {
-        // Check if user is an admin in group_members
-        const { data: memberData } = await supabase
-          .from('group_members')
-          .select('role')
-          .eq('group_id', groupId)
-          .eq('user_id', currentUserId)
-          .maybeSingle();
-
-        if (memberData && memberData.role === 'admin') {
-          role = 'admin';
-        }
+      } else if (memberData && memberData.role === 'admin') {
+        role = 'admin';
       }
 
       console.log(`[USE-WALKIE-TALKIE] Determined user role: ${role}`);
@@ -122,7 +111,6 @@ export const useWalkieTalkie = ({ currentUserId }: UseWalkieTalkieProps) => {
 
       // 2. Fetch or create Walkie-Talkie room
       let room;
-      let isNewRoom = false;
       if (targetRoomId) {
         room = { id: targetRoomId, group_id: groupId, created_by: currentUserId, status: 'active' as const, created_at: new Date().toISOString() };
       } else {
@@ -130,22 +118,23 @@ export const useWalkieTalkie = ({ currentUserId }: UseWalkieTalkieProps) => {
         if (!room) {
           console.log('[USE-WALKIE-TALKIE] No active Walkie-Talkie room found. Creating new room...');
           room = await walkieTalkieSignalingService.createRoom(groupId, currentUserId);
-          isNewRoom = true;
         } else {
           console.log('[USE-WALKIE-TALKIE] Found active Walkie-Talkie room:', room.id);
         }
       }
 
-      // 3. Join the room in DB
-      await walkieTalkieSignalingService.joinRoom(room.id, currentUserId);
+      // 3. Join the room in DB and send notifications in parallel/background to keep UI responsive
       updateActiveRoomId(room.id);
+      const joinPromise = walkieTalkieSignalingService.joinRoom(room.id, currentUserId);
 
-      // Notify group members if we started/created the walkie talkie
-      if (isNewRoom) {
+      // If we initiated this session (i.e., not joining from an incoming notification trigger)
+      if (!targetRoomId) {
         walkieTalkieSignalingService.notifyGroupMembers(room, currentUserId).catch((err) => {
-          console.error('[USE-WALKIE-TALKIE] Error notifying group members of new Walkie-Talkie:', err);
+          console.error('[USE-WALKIE-TALKIE] Error notifying group members of Walkie-Talkie:', err);
         });
       }
+
+      await joinPromise;
 
       // 4. Initialize the Manager
       const manager = new GroupWalkieTalkieManager(

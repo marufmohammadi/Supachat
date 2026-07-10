@@ -331,18 +331,20 @@ export function useGroupCall({ currentUserId }: UseGroupCallProps) {
       const nextCameraEnabled = callType === 'video';
       setIsCameraEnabled(nextCameraEnabled);
 
-      // 1. Capture local audio/video media stream
-      const stream = await captureLocalMedia(callType, facingMode);
-
-      // 2. Create the room row on Supabase
-      const room = await groupSignalingService.createCallRoom(groupId, callType, currentUserId);
-      console.log('[GROUP-CALL] Room created successfully:', room);
+      // 1 & 2. Capture media and create call room in PARALLEL to minimize latency
+      const [stream, room] = await Promise.all([
+        captureLocalMedia(callType, facingMode),
+        groupSignalingService.createCallRoom(groupId, callType, currentUserId)
+      ]);
+      console.log('[GROUP-CALL] Media captured and room created successfully:', room);
 
       // 3. Insert local participant row to signal we have joined
       await groupSignalingService.joinCallRoom(room.id, currentUserId, isMuted, nextCameraEnabled);
 
-      // 4. Broadcast instant notification to other online members of the group
-      await groupSignalingService.notifyGroupMembers(room, currentUserId);
+      // 4. Dispatch members notification immediately in background without blocking the UI
+      groupSignalingService.notifyGroupMembers(room, currentUserId).catch((err) => {
+        console.error('[GROUP-CALL] Background notifyGroupMembers error:', err);
+      });
 
       // 5. Initialize real-time mesh signaling
       const subCleanups = await initRoomMesh(room, stream);
@@ -374,11 +376,11 @@ export function useGroupCall({ currentUserId }: UseGroupCallProps) {
       const nextCameraEnabled = room.call_type === 'video';
       setIsCameraEnabled(nextCameraEnabled);
 
-      // 1. Capture local audio/video media stream
-      const stream = await captureLocalMedia(room.call_type, facingMode);
-
-      // 2. Insert participant row to join the call room
-      await groupSignalingService.joinCallRoom(room.id, currentUserId, isMuted, nextCameraEnabled);
+      // 1 & 2. Capture media and join room in PARALLEL to minimize latency
+      const [stream, _] = await Promise.all([
+        captureLocalMedia(room.call_type, facingMode),
+        groupSignalingService.joinCallRoom(room.id, currentUserId, isMuted, nextCameraEnabled)
+      ]);
       console.log(`[GROUP-CALL] Successfully joined room ${room.id} as active participant`);
 
       // 3. Initialize real-time mesh signaling

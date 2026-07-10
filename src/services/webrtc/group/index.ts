@@ -37,18 +37,32 @@ export class GroupWebRTCManager {
   public setLocalStream(stream: MediaStream) {
     this.localStream = stream;
     
-    // For all existing peer connections, update their local tracks if they don't have them
+    // For all existing peer connections, update or replace their local tracks seamlessly
     this.peerConnections.forEach((info) => {
       const localTracks = stream.getTracks();
       console.log(`[GROUP-WEBRTC] Syncing local tracks. streamId=${stream.id}, tracksCount=${localTracks.length} for peer ${info.peerId}`);
       
       localTracks.forEach((track) => {
         const senders = info.pc.getSenders();
-        const hasTrack = senders.some((s) => s.track?.id === track.id || s.track?.kind === track.kind);
-        if (!hasTrack) {
+        // Find if we already have an active sender for this track's kind (e.g., video or audio)
+        const sender = senders.find((s) => s.track?.kind === track.kind);
+        
+        if (sender) {
+          // If the track is different, replace it seamlessly without renegotiation
+          if (sender.track?.id !== track.id) {
+            console.log(`[GROUP-WEBRTC] [setLocalStream] Seamlessly replacing old ${track.kind} track (id=${sender.track?.id}) with new track (id=${track.id}) for peer ${info.peerId}`);
+            track.enabled = true;
+            sender.replaceTrack(track).catch((err) => {
+              console.error(`[GROUP-WEBRTC] [setLocalStream] Failed replacing ${track.kind} track for peer ${info.peerId}:`, err);
+            });
+          } else {
+            console.log(`[GROUP-WEBRTC] [setLocalStream] Track ${track.kind} is already active on sender for peer ${info.peerId}`);
+          }
+        } else {
+          // No existing sender for this media kind, add it as a new track
           track.enabled = true;
           info.pc.addTrack(track, stream);
-          console.log(`[GROUP-WEBRTC] [setLocalStream] Added local track to peer connection for ${info.peerId}: id=${track.id}, kind=${track.kind}, enabled=${track.enabled}`);
+          console.log(`[GROUP-WEBRTC] [setLocalStream] Added new track to peer connection for ${info.peerId}: id=${track.id}, kind=${track.kind}, enabled=${track.enabled}`);
         }
       });
     });

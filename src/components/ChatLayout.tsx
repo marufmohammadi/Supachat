@@ -1161,10 +1161,18 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
 
           // Browser notification if supported
           if ('Notification' in window && Notification.permission === 'granted') {
-            new Notification(`${caller?.username || 'Someone'} started a Walkie-Talkie`, {
+            const title = `${caller?.username || 'Someone'} started a Walkie-Talkie`;
+            const options = {
               body: `In group ${group?.name || 'Secure Group'}`,
-              icon: `https://api.dicebear.com/7.x/adventurer/svg?seed=${room.group_id}`
-            });
+              icon: `https://api.dicebear.com/7.x/adventurer/svg?seed=${room.group_id}`,
+              requireInteraction: true
+            };
+            if ('serviceWorker' in navigator) {
+              const reg = await navigator.serviceWorker.ready;
+              reg.showNotification(title, options);
+            } else {
+              new Notification(title, options);
+            }
           }
         } catch (err) {
           console.error('[WALKIE-TALKIE] Error handling incoming walkie-talkie invite:', err);
