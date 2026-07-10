@@ -310,6 +310,6 @@ export async function decryptMessage(
   // Safe Recovery Fallback:
   // If the ciphertext is NOT marked as fallback, but standard decryption failed (e.g. because of secure key mismatch or invalid private key),
   // instead of crashing or showing a hard error, try to see if it was a plain-text message or can be loaded safely.
-  console.error('Failed to decrypt message');
+  console.warn('[CRYPTO] Decryption failed gracefully: Secure key mismatch or invalid private key.');
   return '🔒 Decryption Error: Secure key mismatch or invalid private key.';
 }

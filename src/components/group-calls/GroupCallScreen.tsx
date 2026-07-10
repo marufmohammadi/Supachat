@@ -73,7 +73,7 @@ const ParticipantVideoTile: React.FC<{
           autoPlay
           playsInline
           muted={isLocal} // Must mute local stream to avoid audio feedback loops
-          className={`w-full h-full object-cover ${isLocal ? 'scale-x-[-1]' : ''} ${!cameraEnabled ? 'hidden' : ''}`}
+          className={`w-full h-full object-cover ${isLocal ? 'scale-x-[-1]' : ''} ${!cameraEnabled ? 'opacity-0 absolute w-1 h-1 pointer-events-none' : ''}`}
         />
       ) : null}
 
@@ -392,28 +392,32 @@ export const GroupCallScreen: React.FC<GroupCallScreenProps> = ({
             {isMuted ? <MicOff className="w-5.5 h-5.5" /> : <Mic className="w-5.5 h-5.5" />}
           </button>
 
-          {/* Camera ON/OFF Toggle */}
-          <button
-            onClick={onToggleCamera}
-            className={`w-12 h-12 rounded-full flex items-center justify-center transition-all cursor-pointer ${
-              !isCameraEnabled
-                ? 'bg-red-600/20 text-red-400 border border-red-500/30 hover:bg-red-600/30'
-                : 'bg-[#202c33]/90 text-gray-300 hover:bg-gray-700 hover:text-white border border-transparent'
-            }`}
-            title={isCameraEnabled ? 'Disable camera stream' : 'Enable camera stream'}
-          >
-            {isCameraEnabled ? <Video className="w-5.5 h-5.5" /> : <VideoOff className="w-5.5 h-5.5" />}
-          </button>
+           {/* Camera ON/OFF Toggles (Only for Video Calls) */}
+          {activeRoom?.call_type === 'video' && (
+            <>
+              <button
+                onClick={onToggleCamera}
+                className={`w-12 h-12 rounded-full flex items-center justify-center transition-all cursor-pointer ${
+                  !isCameraEnabled
+                    ? 'bg-red-600/20 text-red-400 border border-red-500/30 hover:bg-red-600/30'
+                    : 'bg-[#202c33]/90 text-gray-300 hover:bg-gray-700 hover:text-white border border-transparent'
+                }`}
+                title={isCameraEnabled ? 'Disable camera stream' : 'Enable camera stream'}
+              >
+                {isCameraEnabled ? <Video className="w-5.5 h-5.5" /> : <VideoOff className="w-5.5 h-5.5" />}
+              </button>
 
-          {/* Switch Camera facing mode */}
-          {isCameraEnabled && (
-            <button
-              onClick={onSwitchCamera}
-              className="w-12 h-12 rounded-full bg-[#202c33]/90 text-gray-300 hover:bg-gray-700 hover:text-white transition-all flex items-center justify-center cursor-pointer border border-transparent"
-              title="Flip camera front/back"
-            >
-              <Camera className="w-5.5 h-5.5" />
-            </button>
+              {/* Switch Camera facing mode */}
+              {isCameraEnabled && (
+                <button
+                  onClick={onSwitchCamera}
+                  className="w-12 h-12 rounded-full bg-[#202c33]/90 text-gray-300 hover:bg-gray-700 hover:text-white transition-all flex items-center justify-center cursor-pointer border border-transparent"
+                  title="Flip camera front/back"
+                >
+                  <Camera className="w-5.5 h-5.5" />
+                </button>
+              )}
+            </>
           )}
 
           {/* Speaker Mode booster (simulated boost toggle) */}

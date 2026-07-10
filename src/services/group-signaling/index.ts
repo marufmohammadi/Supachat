@@ -292,11 +292,13 @@ export const groupSignalingService = {
           {
             event: 'UPDATE',
             schema: 'public',
-            table: 'call_rooms',
-            filter: `id=eq.${roomId}`
+            table: 'call_rooms'
           },
           (payload) => {
-            handler(payload.new as CallRoom);
+            const updatedRoom = payload.new as CallRoom;
+            if (updatedRoom && updatedRoom.id === roomId) {
+              handler(updatedRoom);
+            }
           }
         );
       }
@@ -318,12 +320,11 @@ export const groupSignalingService = {
           {
             event: 'INSERT',
             schema: 'public',
-            table: 'group_call_signals',
-            filter: `room_id=eq.${roomId}`
+            table: 'group_call_signals'
           },
           (payload) => {
             const sig = payload.new as GroupCallSignal;
-            if (sig.receiver_id === userId) {
+            if (sig && sig.room_id === roomId && sig.receiver_id === userId) {
               handler(sig);
             }
           }
@@ -347,11 +348,17 @@ export const groupSignalingService = {
           {
             event: '*',
             schema: 'public',
-            table: 'call_participants',
-            filter: `room_id=eq.${roomId}`
+            table: 'call_participants'
           },
-          () => {
-            handler(undefined);
+          (payload) => {
+            const newRecord = payload.new as any;
+            const oldRecord = payload.old as any;
+            if (
+              (newRecord && newRecord.room_id === roomId) ||
+              (oldRecord && oldRecord.room_id === roomId)
+            ) {
+              handler(undefined);
+            }
           }
         );
       }
@@ -360,40 +367,100 @@ export const groupSignalingService = {
   },
 
   /**
+   * Broadcasts notifications to all members of a group about the new Call Room
+   */
+  async notifyGroupMembers(room: CallRoom, currentUserId: string): Promise<void> {
+    try {
+      // Fetch all group members
+      const { data: members, error } = await supabase
+        .from('group_members')
+        .select('user_id')
+        .eq('group_id', room.group_id);
+
+      if (error) {
+        console.error('[GROUP-CALL] Error fetching group members to notify:', error);
+        return;
+      }
+
+      if (!members || members.length === 0) return;
+
+      const otherMembers = members.filter((m) => m.user_id !== currentUserId);
+      console.log(`[GROUP-CALL] Broadcasting group call notifications to ${otherMembers.length} group members...`);
+
+      // Broadcast to each other member's notification channel
+      for (const m of otherMembers) {
+        const targetChannelName = `user_group_call_notifications:${m.user_id}`;
+        const channel = supabase.channel(targetChannelName);
+
+        channel.subscribe(async (status) => {
+          if (status === 'SUBSCRIBED') {
+            await channel.send({
+              type: 'broadcast',
+              event: 'incoming_group_call',
+              payload: room
+            });
+            // Clean up channel after short delay
+            setTimeout(() => {
+              supabase.removeChannel(channel);
+            }, 1000);
+          }
+        });
+      }
+    } catch (err) {
+      console.error('[GROUP-CALL] Error in notifyGroupMembers:', err);
+    }
+  },
+
+  /**
    * Subscribes to new call rooms created in groups where the user is a member
    */
   subscribeToIncomingGroupCalls(userId: string, onIncoming: (room: CallRoom) => void): () => void {
-    const channelName = `incoming_group_calls_${userId}`;
-    const { unsubscribe } = GroupCallRealtimeManager.getOrCreateChannel(
-      channelName,
-      onIncoming,
-      (channel, handler) => {
-        return channel.on(
-          'postgres_changes',
-          {
-            event: 'INSERT',
-            schema: 'public',
-            table: 'call_rooms'
-          },
-          async (payload) => {
-            const newRoom = payload.new as CallRoom;
-            if (newRoom.status === 'ringing' && newRoom.created_by !== userId) {
-              // Verify membership
-              const { data: member, error } = await supabase
-                .from('group_members')
-                .select('id')
-                .eq('group_id', newRoom.group_id)
-                .eq('user_id', userId)
-                .maybeSingle();
+    const channelName = `user_group_call_notifications:${userId}`;
+    console.log(`[GROUP-SIGNALS] Setting up dual-mode group call subscription for user: ${userId}`);
 
-              if (!error && member) {
-                handler(newRoom);
-              }
-            }
-          }
-        );
+    // Mode 1: Independent real-time broadcast channel receiver
+    const broadcastChannel = supabase.channel(channelName);
+    broadcastChannel.on('broadcast', { event: 'incoming_group_call' }, (payload) => {
+      if (payload.payload) {
+        console.log('[GROUP-SIGNALS] Received incoming group call via real-time broadcast:', payload.payload);
+        onIncoming(payload.payload as CallRoom);
       }
-    );
-    return unsubscribe;
+    });
+    broadcastChannel.subscribe();
+
+    // Mode 2: Re-use the existing postgres_changes DB replication channel as a robust dual-mode fallback
+    const pgChannelName = `incoming_group_calls_pg_${userId}`;
+    const pgChannel = supabase.channel(pgChannelName);
+    pgChannel.on(
+      'postgres_changes',
+      {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'call_rooms'
+      },
+      async (payload) => {
+        const newRoom = payload.new as CallRoom;
+        if (newRoom.status === 'ringing' && newRoom.created_by !== userId) {
+          // Verify membership
+          const { data: member, error } = await supabase
+            .from('group_members')
+            .select('id')
+            .eq('group_id', newRoom.group_id)
+            .eq('user_id', userId)
+            .maybeSingle();
+
+          if (!error && member) {
+            console.log('[GROUP-SIGNALS] Received incoming group call via DB replication:', newRoom);
+            onIncoming(newRoom);
+          }
+        }
+      }
+    ).subscribe();
+
+    return () => {
+      console.log(`[GROUP-SIGNALS] Cleaning up dual-mode incoming group call subscription for user: ${userId}`);
+      supabase.removeChannel(broadcastChannel);
+      supabase.removeChannel(pgChannel);
+    };
   }
 };

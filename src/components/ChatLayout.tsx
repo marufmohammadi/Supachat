@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, FormEvent } from 'react';
 import { 
   Search, Send, Lock, Plus, Users, ShieldCheck, CheckCheck, Check, LogOut, 
-  Database, UserCheck, Key, Shield, AlertCircle, Info, Sparkles, Archive, Image, FileText, Globe, ArrowLeft
+  Database, UserCheck, Key, Shield, AlertCircle, Info, Sparkles, Archive, Image, FileText, Globe, ArrowLeft, Mic
 } from 'lucide-react';
 import { supabase, testSupabaseConnection } from '../lib/supabase';
 import { encryptMessage, decryptMessage, importPublicKey } from '../lib/crypto';
@@ -26,6 +26,9 @@ import { IncomingGroupCallModal } from './group-calls/IncomingGroupCallModal';
 import { GroupCallScreen } from './group-calls/GroupCallScreen';
 import { groupSignalingService } from '../services/group-signaling';
 import { CallRoom as GroupCallRoom } from '../types/group-call';
+import { useWalkieTalkie } from '../hooks/group-call/useWalkieTalkie';
+import { WalkieTalkieScreen } from './group-calls/WalkieTalkieScreen';
+import { walkieTalkieSignalingService } from '../services/group-call/walkie-talkie/WalkieTalkieSignalingService';
 
 function getFriendlyDateHeader(dateStr: string): string {
   if (!dateStr) return 'Unknown Date';
@@ -134,12 +137,42 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
     rejectIncomingGroupCall,
   } = useGroupCall({ currentUserId });
 
+  // Walkie-Talkie Mode Hook
+  const {
+    activeGroupId: walkieTalkieGroupId,
+    isJoined: isWalkieTalkieJoined,
+    isConnecting: isWalkieTalkieConnecting,
+    participants: walkieTalkieParticipants,
+    remoteStreams: walkieTalkieRemoteStreams,
+    currentSpeaker: walkieTalkieCurrentSpeaker,
+    connectionQuality: walkieTalkieConnectionQuality,
+    isRoomLocked: isWalkieTalkieRoomLocked,
+    isLocalForceMuted: isWalkieTalkieLocalForceMuted,
+    currentUserRole: walkieTalkieUserRole,
+    error: walkieTalkieError,
+    setError: setWalkieTalkieError,
+    joinWalkieTalkie,
+    leaveWalkieTalkie,
+    startSpeaking: startWalkieTalkieSpeaking,
+    stopSpeaking: stopWalkieTalkieSpeaking,
+    muteUser: muteWalkieTalkieUser,
+    kickUser: kickWalkieTalkieUser,
+    toggleRoomLock: toggleWalkieTalkieRoomLock,
+  } = useWalkieTalkie({ currentUserId });
+
+  // Walkie-Talkie Incoming States
+  const [incomingWalkieTalkieRoom, setIncomingWalkieTalkieRoom] = useState<any | null>(null);
+  const [incomingWalkieTalkieGroupName, setIncomingWalkieTalkieGroupName] = useState<string | null>(null);
+  const [incomingWalkieTalkieCallerName, setIncomingWalkieTalkieCallerName] = useState<string | null>(null);
+
   // State Management
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [activeChat, setActiveChat] = useState<{ type: 'direct' | 'group'; id: string } | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputMessage, setInputMessage] = useState('');
+  const [showWalkieTalkieConfirm, setShowWalkieTalkieConfirm] = useState(false);
+  const [walkieTalkieConfirmGroupId, setWalkieTalkieConfirmGroupId] = useState<string | null>(null);
   
   // UI States
   const [showKeyManager, setShowKeyManager] = useState(false);
@@ -249,6 +282,7 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
   // Keep groupsRef updated to prevent realtime subscription drop cycles
   const groupsRef = useRef<Group[]>([]);
   const lastFetchUnreadTimeRef = useRef<number>(0);
+  const hasLastReadColumnRef = useRef<boolean | null>(null);
   useEffect(() => {
     groupsRef.current = groups;
   }, [groups]);
@@ -431,6 +465,25 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
     return `direct-${sortedIds.join('-')}`;
   };
 
+  // Helper to dynamically check if last_read_at column exists in group_members table
+  const getHasLastReadColumn = async (): Promise<boolean> => {
+    if (hasLastReadColumnRef.current !== null) {
+      return hasLastReadColumnRef.current;
+    }
+    try {
+      const { error } = await supabase.from('group_members').select('last_read_at').limit(1);
+      if (error && error.code === '42703') {
+        hasLastReadColumnRef.current = false;
+        return false;
+      }
+      hasLastReadColumnRef.current = true;
+      return true;
+    } catch {
+      hasLastReadColumnRef.current = false;
+      return false;
+    }
+  };
+
   // Mark all unread messages in database as read or updated last_read_at
   const markChatAsRead = async (chatId: string, type: 'direct' | 'group') => {
     if (isSandboxMode || !currentUserId) {
@@ -470,22 +523,30 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
           Query: `UPDATE group_members SET last_read_at=now() WHERE group_id=${chatId} AND user_id=${currentUserId}`
         });
 
-        const { data, error } = await supabase
-          .from('group_members')
-          .update({ last_read_at: new Date().toISOString() })
-          .eq('group_id', chatId)
-          .eq('user_id', currentUserId)
-          .select();
+        // Always save to localStorage first as a reliable fallback/local cache
+        localStorage.setItem(`whatsapp_last_read_group_${currentUserId}_${chatId}`, new Date().toISOString());
 
-        if (error) {
-          console.error(`[AUDIT] markChatAsRead (group) query failed:`, error);
+        const hasCol = await getHasLastReadColumn();
+        if (hasCol) {
+          const { data, error } = await supabase
+            .from('group_members')
+            .update({ last_read_at: new Date().toISOString() })
+            .eq('group_id', chatId)
+            .eq('user_id', currentUserId)
+            .select();
+
+          if (error) {
+            console.error(`[AUDIT] markChatAsRead (group) query failed:`, error);
+          } else {
+            console.log(`[AUDIT] markChatAsRead (group) query result completed:`, {
+              ReceiverID: currentUserId,
+              GroupID: chatId,
+              UpdatedMembersCount: data?.length,
+              UpdatedRecords: data
+            });
+          }
         } else {
-          console.log(`[AUDIT] markChatAsRead (group) query result completed:`, {
-            ReceiverID: currentUserId,
-            GroupID: chatId,
-            UpdatedMembersCount: data?.length,
-            UpdatedRecords: data
-          });
+          console.log(`[AUDIT] Skipping group_members database update since last_read_at column is not present. Relying on localStorage fallback.`);
         }
       }
       setUnreadCounts(prev => ({ ...prev, [chatId]: 0 }));
@@ -544,25 +605,48 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
       }
 
       // 2. Group channel unreads (messages created_at > last_read_at for group_members)
-      const { data: memberData, error: memberError } = await supabase
-        .from('group_members')
-        .select('group_id, last_read_at')
-        .eq('user_id', currentUserId);
+      const hasCol = await getHasLastReadColumn();
+      let memberData: any[] | null = null;
+      let memberError: any = null;
 
-      if (memberError) {
+      if (hasCol) {
+        const res = await supabase
+          .from('group_members')
+          .select('group_id, last_read_at')
+          .eq('user_id', currentUserId);
+        memberData = res.data;
+        memberError = res.error;
+      } else {
+        memberError = { code: '42703', message: 'column last_read_at does not exist' };
+      }
+
+      if (memberError && memberError.code !== '42703') {
         console.error('[AUDIT] fetchUnreadCounts (groups) query failed:', memberError);
       }
 
-      if (memberData) {
+      let finalMemberData = memberData;
+      if ((memberError || !finalMemberData || finalMemberData.length === 0) && groups.length > 0) {
+        finalMemberData = groups.map(g => ({
+          group_id: g.id,
+          last_read_at: localStorage.getItem(`whatsapp_last_read_group_${currentUserId}_${g.id}`) || new Date(0).toISOString()
+        }));
+      }
+
+      if (finalMemberData) {
         // Run all group unread calculations concurrently in parallel
-        const promises = memberData.map(async (member) => {
+        const promises = finalMemberData.map(async (member) => {
           try {
+            const localLastReadStr = localStorage.getItem(`whatsapp_last_read_group_${currentUserId}_${member.group_id}`);
+            const lastReadTime = (localLastReadStr && (!member.last_read_at || new Date(localLastReadStr) > new Date(member.last_read_at)))
+              ? localLastReadStr
+              : (member.last_read_at || new Date(0).toISOString());
+
             const { data: groupMsgDesc } = await supabase
               .from('messages')
               .select('id')
               .eq('group_id', member.group_id)
               .neq('sender_id', currentUserId)
-              .gt('created_at', member.last_read_at || new Date(0).toISOString());
+              .gt('created_at', lastReadTime);
 
             if (groupMsgDesc) {
               counts[member.group_id] = groupMsgDesc.length;
@@ -1039,6 +1123,60 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
       }
     };
   }, []);
+
+  // Listen to incoming Walkie-Talkies
+  useEffect(() => {
+    if (!currentUserId) return;
+
+    console.log('[WALKIE-TALKIE] Setting up incoming Walkie-Talkie subscription for user:', currentUserId);
+    const unsubscribe = walkieTalkieSignalingService.subscribeToIncomingWalkieTalkies(
+      currentUserId,
+      async (room) => {
+        console.log('[WALKIE-TALKIE] Detected incoming Walkie-Talkie room:', room.id);
+
+        // Don't interrupt if already in a walkie-talkie or call
+        if (walkieTalkieGroupId || isWalkieTalkieJoined) {
+          console.log('[WALKIE-TALKIE] Already active in Walkie-Talkie or connecting. Ignoring.');
+          return;
+        }
+
+        try {
+          // Fetch group details
+          const { data: group } = await supabase
+            .from('groups')
+            .select('name')
+            .eq('id', room.group_id)
+            .maybeSingle();
+
+          // Fetch caller details
+          const { data: caller } = await supabase
+            .from('profiles')
+            .select('username')
+            .eq('id', room.created_by)
+            .maybeSingle();
+
+          setIncomingWalkieTalkieRoom(room);
+          setIncomingWalkieTalkieGroupName(group ? group.name : 'Secure Group Chat');
+          setIncomingWalkieTalkieCallerName(caller ? caller.username : 'Someone');
+
+          // Browser notification if supported
+          if ('Notification' in window && Notification.permission === 'granted') {
+            new Notification(`${caller?.username || 'Someone'} started a Walkie-Talkie`, {
+              body: `In group ${group?.name || 'Secure Group'}`,
+              icon: `https://api.dicebear.com/7.x/adventurer/svg?seed=${room.group_id}`
+            });
+          }
+        } catch (err) {
+          console.error('[WALKIE-TALKIE] Error handling incoming walkie-talkie invite:', err);
+        }
+      }
+    );
+
+    return () => {
+      console.log('[WALKIE-TALKIE] Cleaning up incoming Walkie-Talkie subscription');
+      unsubscribe();
+    };
+  }, [currentUserId, isWalkieTalkieJoined, walkieTalkieGroupId, currentUsername, joinWalkieTalkie]);
 
   // Request desktop/mobile notification permission at startup & Register Service Worker
   useEffect(() => {
@@ -1856,21 +1994,20 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
 
             {activeChat && activeChat.type === 'group' && (
               <div className="flex items-center gap-2">
-                {activeGroupRoomForCurrentChat ? (
-                  <button
-                    id="join-group-call-banner-btn"
-                    onClick={() => joinGroupCall(activeGroupRoomForCurrentChat)}
-                    className="bg-emerald-500 hover:bg-emerald-400 text-black text-xs font-bold px-4 py-2 rounded-full animate-pulse transition-all shadow-md shrink-0 flex items-center gap-1.5 cursor-pointer active:scale-95"
-                  >
-                    <Users className="w-3.5 h-3.5" /> Join Call
-                  </button>
-                ) : (
-                  <GroupCallButtons
-                    groupId={activeChat.id}
-                    onStartGroupCall={(gId, type) => startGroupCall(gId, type)}
-                    disabled={!!activeCall || !!activeGroupRoom}
-                  />
-                )}
+                <GroupCallButtons
+                  groupId={activeChat.id}
+                  onStartGroupCall={async (gId, type) => {
+                    if (activeGroupRoomForCurrentChat) {
+                      await groupSignalingService.updateRoomStatus(activeGroupRoomForCurrentChat.id, 'ended');
+                    }
+                    startGroupCall(gId, type);
+                  }}
+                  onStartWalkieTalkie={(gId) => {
+                    setWalkieTalkieConfirmGroupId(gId);
+                    setShowWalkieTalkieConfirm(true);
+                  }}
+                  disabled={!!activeCall || !!activeGroupRoom || isWalkieTalkieJoined}
+                />
               </div>
             )}
           </div>
@@ -2382,12 +2519,70 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
       )}
 
       {/* --- GROUP CALLS OVERLAY SYSTEMS --- */}
+      {/* Incoming Walkie-Talkie Prompt */}
+      {incomingWalkieTalkieRoom && incomingWalkieTalkieGroupName && incomingWalkieTalkieCallerName && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-fade-in">
+          <div className="relative w-full max-w-sm overflow-hidden rounded-3xl border border-gray-800 bg-[#111b21] p-6 shadow-2xl text-center flex flex-col items-center">
+            {/* Pulsing visual circles */}
+            <div className="relative flex h-28 w-28 items-center justify-center">
+              <div className="absolute inset-0 rounded-full bg-emerald-500/10 animate-ping" />
+              <div className="absolute inset-2 rounded-full bg-emerald-500/20 animate-pulse" />
+              <div className="relative h-20 w-20 rounded-full border border-emerald-500 bg-[#202c33] flex items-center justify-center text-emerald-400 text-3xl shadow-lg">
+                🎤
+              </div>
+            </div>
+
+            {/* Info details */}
+            <div className="mt-6">
+              <h3 className="text-xl font-bold text-white tracking-tight">{incomingWalkieTalkieGroupName}</h3>
+              <p className="mt-1 text-sm text-gray-400 font-mono">
+                Walkie-Talkie Room
+              </p>
+              <p className="mt-4 text-xs text-emerald-400 font-medium bg-emerald-950/40 px-3 py-1 rounded-full border border-emerald-500/20 inline-block animate-pulse">
+                {incomingWalkieTalkieCallerName} started a Walkie-Talkie
+              </p>
+            </div>
+
+            {/* Accept/Decline (Join/Ignore) buttons */}
+            <div className="mt-8 flex w-full justify-center gap-4 max-w-[280px]">
+              {/* Ignore button */}
+              <button
+                id="ignore-walkie-talkie-btn"
+                onClick={() => {
+                  setIncomingWalkieTalkieRoom(null);
+                  setIncomingWalkieTalkieGroupName(null);
+                  setIncomingWalkieTalkieCallerName(null);
+                }}
+                className="flex-1 py-3 px-4 bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white rounded-xl text-sm font-semibold transition-all hover:scale-[1.02] active:scale-[0.98] cursor-pointer"
+              >
+                Ignore
+              </button>
+
+              {/* Join button */}
+              <button
+                id="join-walkie-talkie-btn"
+                onClick={() => {
+                  const r = incomingWalkieTalkieRoom;
+                  setIncomingWalkieTalkieRoom(null);
+                  setIncomingWalkieTalkieGroupName(null);
+                  setIncomingWalkieTalkieCallerName(null);
+                  joinWalkieTalkie(r.group_id, currentUsername, r.id);
+                }}
+                className="flex-1 py-3 px-4 bg-emerald-500 hover:bg-emerald-400 text-black rounded-xl text-sm font-bold shadow-lg shadow-emerald-500/10 transition-all hover:scale-[1.02] active:scale-[0.98] cursor-pointer"
+              >
+                Join
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Incoming Group Call Prompt */}
-      {incomingGroupRoom && incomingGroupName && incomingCallerName && (
+      {incomingGroupRoom && (
         <IncomingGroupCallModal
           room={incomingGroupRoom}
-          groupName={incomingGroupName}
-          callerName={incomingCallerName}
+          groupName={incomingGroupName || 'Secure Group Chat'}
+          callerName={incomingCallerName || 'Someone'}
           onAccept={(room) => joinGroupCall(room)}
           onReject={rejectIncomingGroupCall}
         />
@@ -2421,6 +2616,77 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
           <span className="text-lg">⚠️</span>
           <div className="text-xs font-semibold">{groupCallError}</div>
           <button onClick={() => setGroupCallError(null)} className="text-white hover:text-gray-200 ml-2">✕</button>
+        </div>
+      )}
+
+      {/* Active Group Walkie-Talkie Screen Overlay */}
+      {isWalkieTalkieJoined && walkieTalkieGroupId && (
+        <WalkieTalkieScreen
+          groupId={walkieTalkieGroupId}
+          groupName={groups.find((g) => g.id === walkieTalkieGroupId)?.name || 'Group Walkie-Talkie'}
+          isJoined={isWalkieTalkieJoined}
+          isConnecting={isWalkieTalkieConnecting}
+          participants={walkieTalkieParticipants}
+          remoteStreams={walkieTalkieRemoteStreams}
+          currentSpeaker={walkieTalkieCurrentSpeaker}
+          connectionQuality={walkieTalkieConnectionQuality}
+          isRoomLocked={isWalkieTalkieRoomLocked}
+          isLocalForceMuted={isWalkieTalkieLocalForceMuted}
+          currentUserRole={walkieTalkieUserRole}
+          error={walkieTalkieError}
+          onLeave={leaveWalkieTalkie}
+          onStartSpeaking={startWalkieTalkieSpeaking}
+          onStopSpeaking={stopWalkieTalkieSpeaking}
+          onMuteUser={muteWalkieTalkieUser}
+          onKickUser={kickWalkieTalkieUser}
+          onToggleRoomLock={toggleWalkieTalkieRoomLock}
+          onClearError={() => setWalkieTalkieError(null)}
+          currentUserId={currentUserId}
+        />
+      )}
+
+      {/* Walkie-Talkie Confirmation Dialog */}
+      {showWalkieTalkieConfirm && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-[#1f2c34] text-gray-200 rounded-2xl w-full max-w-sm p-6 border border-gray-700/60 shadow-2xl space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="p-3 bg-emerald-500/10 text-emerald-400 rounded-full">
+                <Mic className="w-6 h-6" />
+              </div>
+              <h4 className="font-semibold text-white text-lg">
+                Join Walkie-Talkie
+              </h4>
+            </div>
+            
+            <p className="text-sm text-gray-300 leading-relaxed">
+              Are you sure you want to join the Walkie-Talkie room? You can communicate using Hold to Talk.
+            </p>
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowWalkieTalkieConfirm(false);
+                  setWalkieTalkieConfirmGroupId(null);
+                }}
+                className="px-4 py-2 text-xs font-semibold text-gray-400 hover:text-white bg-transparent hover:bg-white/5 rounded-xl transition-all cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (walkieTalkieConfirmGroupId) {
+                    joinWalkieTalkie(walkieTalkieConfirmGroupId, currentUsername);
+                  }
+                  setShowWalkieTalkieConfirm(false);
+                }}
+                className="px-5 py-2 text-xs font-semibold bg-emerald-500 hover:bg-emerald-400 text-black rounded-xl transition-all shadow-md active:scale-95 cursor-pointer"
+              >
+                Join
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

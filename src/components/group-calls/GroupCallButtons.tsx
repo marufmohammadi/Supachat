@@ -1,15 +1,17 @@
 import React from 'react';
-import { Phone, Video } from 'lucide-react';
+import { Phone, Video, Mic } from 'lucide-react';
 
 interface GroupCallButtonsProps {
   groupId: string;
   onStartGroupCall: (groupId: string, type: 'audio' | 'video') => void;
+  onStartWalkieTalkie: (groupId: string) => void;
   disabled?: boolean;
 }
 
 export const GroupCallButtons: React.FC<GroupCallButtonsProps> = ({
   groupId,
   onStartGroupCall,
+  onStartWalkieTalkie,
   disabled = false
 }) => {
   return (
@@ -35,6 +37,17 @@ export const GroupCallButtons: React.FC<GroupCallButtonsProps> = ({
         title="Group Video Call"
       >
         <Video className="w-5 h-5" />
+      </button>
+      <button
+        id={`group-walkie-talkie-btn-${groupId}`}
+        onClick={() => onStartWalkieTalkie(groupId)}
+        disabled={disabled}
+        className={`p-2 sm:p-2.5 rounded-full hover:bg-[#202c33] text-emerald-400 hover:text-emerald-300 transition-all ${
+          disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer active:scale-95'
+        }`}
+        title="Walkie-Talkie Mode"
+      >
+        <Mic className="w-5 h-5" />
       </button>
     </div>
   );

@@ -450,4 +450,78 @@ BEGIN
   END IF;
 END $$;
 
+-- 13. WALKIE-TALKIE ROOMS AND MEMBERS TABLES
+CREATE TABLE IF NOT EXISTS public.walkie_talkie_rooms (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  group_id UUID REFERENCES public.groups(id) ON DELETE CASCADE NOT NULL,
+  created_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+  status TEXT DEFAULT 'active' CHECK (status IN ('active', 'ended')) NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS public.walkie_talkie_members (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  room_id UUID REFERENCES public.walkie_talkie_rooms(id) ON DELETE CASCADE NOT NULL,
+  user_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE NOT NULL,
+  joined_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+  left_at TIMESTAMP WITH TIME ZONE,
+  UNIQUE (room_id, user_id)
+);
+
+-- Indexes for Walkie-Talkie tables
+CREATE INDEX IF NOT EXISTS idx_walkie_talkie_rooms_group_id ON public.walkie_talkie_rooms(group_id);
+CREATE INDEX IF NOT EXISTS idx_walkie_talkie_members_room_id ON public.walkie_talkie_members(room_id);
+CREATE INDEX IF NOT EXISTS idx_walkie_talkie_members_user_id ON public.walkie_talkie_members(user_id);
+
+-- Enable RLS for Walkie-Talkie tables
+ALTER TABLE public.walkie_talkie_rooms ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.walkie_talkie_members ENABLE ROW LEVEL SECURITY;
+
+-- Policies for walkie_talkie_rooms
+DROP POLICY IF EXISTS "Any group member can manage walkie talkie rooms" ON public.walkie_talkie_rooms;
+CREATE POLICY "Any group member can manage walkie talkie rooms" ON public.walkie_talkie_rooms FOR ALL
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.group_members
+      WHERE group_members.group_id = walkie_talkie_rooms.group_id AND group_members.user_id = auth.uid()
+    )
+  );
+
+-- Policies for walkie_talkie_members
+DROP POLICY IF EXISTS "Any group member can manage walkie talkie members" ON public.walkie_talkie_members;
+CREATE POLICY "Any group member can manage walkie talkie members" ON public.walkie_talkie_members FOR ALL
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.walkie_talkie_rooms r
+      JOIN public.group_members m ON m.group_id = r.group_id
+      WHERE r.id = walkie_talkie_members.room_id AND m.user_id = auth.uid()
+    )
+  );
+
+-- Grants
+GRANT ALL ON public.walkie_talkie_rooms TO postgres, anon, authenticated, service_role;
+GRANT ALL ON public.walkie_talkie_members TO postgres, anon, authenticated, service_role;
+
+-- Enable Real-Time replication for Walkie-Talkie tables
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' 
+      AND schemaname = 'public' 
+      AND tablename = 'walkie_talkie_rooms'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.walkie_talkie_rooms;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' 
+      AND schemaname = 'public' 
+      AND tablename = 'walkie_talkie_members'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.walkie_talkie_members;
+  END IF;
+END $$;
+
 `;

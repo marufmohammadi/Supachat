@@ -5,6 +5,9 @@ export interface PeerConnectionInfo {
   pc: RTCPeerConnection;
   remoteStream: MediaStream;
   iceCandidatesQueue: RTCIceCandidateInit[];
+  isPolite: boolean;
+  makingOffer: boolean;
+  ignoreOffer: boolean;
 }
 
 export class GroupWebRTCManager {
@@ -77,11 +80,18 @@ export class GroupWebRTCManager {
     const pc = new RTCPeerConnection(pcConfig);
     const remoteStream = new MediaStream();
 
+    // Determine politeness lexicographically by user ID.
+    // One peer will ALWAYS be polite (smaller ID) and the other impolite (larger ID).
+    const isPolite = this.currentUserId.localeCompare(peerId) < 0;
+
     const info: PeerConnectionInfo = {
       peerId,
       pc,
       remoteStream,
-      iceCandidatesQueue: []
+      iceCandidatesQueue: [],
+      isPolite,
+      makingOffer: false,
+      ignoreOffer: false
     };
 
     this.peerConnections.set(peerId, info);
@@ -181,6 +191,7 @@ export class GroupWebRTCManager {
     if (shouldCreateOffer) {
       try {
         console.log(`[GROUP-WEBRTC] Creating SDP Offer for peer ${peerId}...`);
+        info.makingOffer = true;
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
         console.log(`[GROUP-WEBRTC] Local SDP Offer description set successfully. Sending to peer ${peerId}.`);
@@ -193,6 +204,8 @@ export class GroupWebRTCManager {
         );
       } catch (err) {
         console.error(`[GROUP-WEBRTC] Error creating offer for peer ${peerId}:`, err);
+      } finally {
+        info.makingOffer = false;
       }
     }
   }
@@ -206,6 +219,7 @@ export class GroupWebRTCManager {
 
     try {
       console.log(`[GROUP-WEBRTC] Initiating ICE restart for peer ${peerId}`);
+      info.makingOffer = true;
       const offer = await info.pc.createOffer({ iceRestart: true });
       await info.pc.setLocalDescription(offer);
       console.log(`[GROUP-WEBRTC] ICE restart local offer set successfully. Sending to peer ${peerId}.`);
@@ -218,6 +232,8 @@ export class GroupWebRTCManager {
       );
     } catch (err) {
       console.error(`[GROUP-WEBRTC] Failed ICE restart for peer ${peerId}:`, err);
+    } finally {
+      info.makingOffer = false;
     }
   }
 
@@ -235,9 +251,31 @@ export class GroupWebRTCManager {
 
     const pc = info.pc;
 
+    if (pc.signalingState === 'closed') {
+      console.warn(`[GROUP-WEBRTC] Received signal [${type}] from peer ${peerId} but connection is closed.`);
+      return;
+    }
+
     try {
       if (type === 'offer') {
+        // Detect offer collision (glare)
+        const offerCollision = info.makingOffer || pc.signalingState !== 'stable';
+        
+        info.ignoreOffer = !info.isPolite && offerCollision;
+        if (info.ignoreOffer) {
+          console.log(`[GROUP-WEBRTC] Offer collision detected for peer ${peerId}. We are IMPOLITE. Ignoring offer.`);
+          return;
+        }
+
         console.log(`[GROUP-WEBRTC] Setting remote description for offer from peer ${peerId}...`);
+        
+        if (offerCollision && info.isPolite) {
+          console.log(`[GROUP-WEBRTC] Offer collision detected for peer ${peerId}. We are POLITE. Rolling back local offer first...`);
+          await pc.setLocalDescription({ type: 'rollback' }).catch((err) => {
+            console.warn(`[GROUP-WEBRTC] Rolled back offer error for peer ${peerId}:`, err);
+          });
+        }
+
         await pc.setRemoteDescription(new RTCSessionDescription(data));
         console.log(`[GROUP-WEBRTC] Remote SDP Offer applied successfully for peer ${peerId}`);
 
@@ -268,6 +306,11 @@ export class GroupWebRTCManager {
         );
 
       } else if (type === 'answer') {
+        if (pc.signalingState !== 'have-local-offer') {
+          console.warn(`[GROUP-WEBRTC] Received answer from peer ${peerId} but signaling state is ${pc.signalingState}. Skipping setRemoteDescription.`);
+          return;
+        }
+
         console.log(`[GROUP-WEBRTC] Setting remote description for answer from peer ${peerId}...`);
         await pc.setRemoteDescription(new RTCSessionDescription(data));
         console.log(`[GROUP-WEBRTC] Remote SDP Answer applied successfully for peer ${peerId}`);
@@ -286,10 +329,17 @@ export class GroupWebRTCManager {
         }
 
       } else if (type === 'candidate') {
+        if (info.ignoreOffer) {
+          console.log(`[GROUP-WEBRTC] Ignoring candidate from peer ${peerId} because we ignored their offer.`);
+          return;
+        }
+
         if (pc.remoteDescription) {
           console.log(`[GROUP-WEBRTC] Applying ICE candidate immediately from peer ${peerId}`);
           await pc.addIceCandidate(new RTCIceCandidate(data)).catch((err) => {
-            console.warn(`[GROUP-WEBRTC] Error applying direct ICE candidate for peer ${peerId}:`, err);
+            if (!info.ignoreOffer) {
+              console.warn(`[GROUP-WEBRTC] Error applying direct ICE candidate for peer ${peerId}:`, err);
+            }
           });
         } else {
           console.log(`[GROUP-WEBRTC] Queueing ICE candidate for peer ${peerId} (remote description not set yet)`);
@@ -332,6 +382,13 @@ export class GroupWebRTCManager {
     });
     this.peerConnections.clear();
     this.triggerRemoteStreamsUpdate();
+  }
+
+  /**
+   * Returns list of currently connected peer IDs
+   */
+  public getConnectedPeerIds(): string[] {
+    return Array.from(this.peerConnections.keys());
   }
 
   /**

@@ -489,6 +489,10 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
       } 
       else if (signal.type === 'answer') {
         if (pcRef.current) {
+          if (pcRef.current.signalingState !== 'have-local-offer') {
+            console.warn(`[CALLS] Received answer but signaling state is ${pcRef.current.signalingState}. Skipping setRemoteDescription.`);
+            return;
+          }
           await pcRef.current.setRemoteDescription(new RTCSessionDescription(signal.data));
           console.log('[CALLS] Remote SDP Answer applied successfully');
 

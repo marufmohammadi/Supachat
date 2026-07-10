@@ -33,6 +33,8 @@ export function useGroupCall({ currentUserId }: UseGroupCallProps) {
   const localStreamRef = useRef<MediaStream | null>(null);
   const activeRoomRef = useRef<CallRoom | null>(null);
   const durationIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const fallbackIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const meshCleanupRef = useRef<(() => void) | null>(null);
 
   // Keep activeRoomRef in sync
   useEffect(() => {
@@ -45,6 +47,15 @@ export function useGroupCall({ currentUserId }: UseGroupCallProps) {
   const cleanupCallResources = useCallback(() => {
     console.log('[GROUP-CALL] Cleaning up group call resources...');
     
+    if (meshCleanupRef.current) {
+      try {
+        meshCleanupRef.current();
+      } catch (err) {
+        console.warn('[GROUP-CALL] Error during mesh cleanup execution:', err);
+      }
+      meshCleanupRef.current = null;
+    }
+
     if (webRTCManagerRef.current) {
       webRTCManagerRef.current.destroy();
       webRTCManagerRef.current = null;
@@ -58,6 +69,11 @@ export function useGroupCall({ currentUserId }: UseGroupCallProps) {
     if (durationIntervalRef.current) {
       clearInterval(durationIntervalRef.current);
       durationIntervalRef.current = null;
+    }
+
+    if (fallbackIntervalRef.current) {
+      clearInterval(fallbackIntervalRef.current);
+      fallbackIntervalRef.current = null;
     }
 
     setLocalStream(null);
@@ -139,11 +155,38 @@ export function useGroupCall({ currentUserId }: UseGroupCallProps) {
       canvas.height = 480;
       const ctx = canvas.getContext('2d');
       if (ctx) {
-        ctx.fillStyle = '#111827';
-        ctx.fillRect(0, 0, 640, 480);
+        ctx.fillStyle = '#0f172a';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#10b981';
+        ctx.font = '24px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('Simulated Camera Active', 320, 240);
       }
+
+      if (fallbackIntervalRef.current) {
+        clearInterval(fallbackIntervalRef.current);
+      }
+
+      let frame = 0;
+      fallbackIntervalRef.current = setInterval(() => {
+        const ctx2 = canvas.getContext('2d');
+        if (ctx2) {
+          ctx2.fillStyle = '#0f172a';
+          ctx2.fillRect(0, 0, canvas.width, canvas.height);
+          ctx2.fillStyle = '#10b981';
+          ctx2.font = '24px sans-serif';
+          ctx2.textAlign = 'center';
+          ctx2.fillText(`Simulated Camera Feed (${frame++})`, 320, 200);
+          
+          // Draw a pulsing circle to show movement and ensure frame generation
+          ctx2.beginPath();
+          ctx2.arc(320, 280, 40 + Math.sin(frame * 0.1) * 15, 0, Math.PI * 2);
+          ctx2.fillStyle = '#3b82f6';
+          ctx2.fill();
+        }
+      }, 100);
       
-      const videoStream = type === 'video' ? canvas.captureStream(10) : new MediaStream();
+      const videoStream = type === 'video' ? canvas.captureStream(30) : new MediaStream();
       
       let audioTrack: MediaStreamTrack | null = null;
       try {
@@ -200,14 +243,14 @@ export function useGroupCall({ currentUserId }: UseGroupCallProps) {
     // 2. Identify participants who are no longer in the list (or left_at is set) and disconnect them
     const peerIdsInDb = new Set<string>(otherParticipants.map((p) => p.user_id));
     // Retrieve connections managed by WebRTC manager to check if any left
-    const currentMeshConnectedPeers = Array.from(remoteStreams.keys()) as string[];
+    const currentMeshConnectedPeers = webRTCManagerRef.current.getConnectedPeerIds();
     for (const peerId of currentMeshConnectedPeers) {
       if (!peerIdsInDb.has(peerId)) {
         console.log(`[GROUP-CALL] Participant ${peerId} left the call. Disconnecting peer.`);
         webRTCManagerRef.current.disconnectPeer(peerId);
       }
     }
-  }, [currentUserId, remoteStreams]);
+  }, [currentUserId]);
 
   /**
    * Refreshes the participant list for an active room and triggers peer syncing
@@ -285,6 +328,9 @@ export function useGroupCall({ currentUserId }: UseGroupCallProps) {
       cleanupCallResources();
       setCallError(null);
 
+      const nextCameraEnabled = callType === 'video';
+      setIsCameraEnabled(nextCameraEnabled);
+
       // 1. Capture local audio/video media stream
       const stream = await captureLocalMedia(callType, facingMode);
 
@@ -293,14 +339,21 @@ export function useGroupCall({ currentUserId }: UseGroupCallProps) {
       console.log('[GROUP-CALL] Room created successfully:', room);
 
       // 3. Insert local participant row to signal we have joined
-      await groupSignalingService.joinCallRoom(room.id, currentUserId, isMuted, isCameraEnabled);
+      await groupSignalingService.joinCallRoom(room.id, currentUserId, isMuted, nextCameraEnabled);
 
-      // 4. Initialize real-time mesh signaling
+      // 4. Broadcast instant notification to other online members of the group
+      await groupSignalingService.notifyGroupMembers(room, currentUserId);
+
+      // 5. Initialize real-time mesh signaling
       const subCleanups = await initRoomMesh(room, stream);
+      meshCleanupRef.current = subCleanups;
 
       // Return cleanup handler so component can safely unmount or switch states
       return () => {
-        subCleanups();
+        if (meshCleanupRef.current) {
+          meshCleanupRef.current();
+          meshCleanupRef.current = null;
+        }
         cleanupCallResources();
       };
     } catch (err: any) {
@@ -308,7 +361,7 @@ export function useGroupCall({ currentUserId }: UseGroupCallProps) {
       setCallError(`Could not initiate group call: ${err.message || 'Unknown error'}`);
       cleanupCallResources();
     }
-  }, [captureLocalMedia, facingMode, isMuted, isCameraEnabled, initRoomMesh, cleanupCallResources, currentUserId]);
+  }, [captureLocalMedia, facingMode, isMuted, initRoomMesh, cleanupCallResources, currentUserId]);
 
   /**
    * Action: Join an existing group call room
@@ -318,15 +371,19 @@ export function useGroupCall({ currentUserId }: UseGroupCallProps) {
       cleanupCallResources();
       setCallError(null);
 
+      const nextCameraEnabled = room.call_type === 'video';
+      setIsCameraEnabled(nextCameraEnabled);
+
       // 1. Capture local audio/video media stream
       const stream = await captureLocalMedia(room.call_type, facingMode);
 
       // 2. Insert participant row to join the call room
-      await groupSignalingService.joinCallRoom(room.id, currentUserId, isMuted, isCameraEnabled);
+      await groupSignalingService.joinCallRoom(room.id, currentUserId, isMuted, nextCameraEnabled);
       console.log(`[GROUP-CALL] Successfully joined room ${room.id} as active participant`);
 
       // 3. Initialize real-time mesh signaling
       const subCleanups = await initRoomMesh(room, stream);
+      meshCleanupRef.current = subCleanups;
 
       // Clear any pending incoming notifications
       setIncomingRoom(null);
@@ -334,7 +391,10 @@ export function useGroupCall({ currentUserId }: UseGroupCallProps) {
       setIncomingCallerName(null);
 
       return () => {
-        subCleanups();
+        if (meshCleanupRef.current) {
+          meshCleanupRef.current();
+          meshCleanupRef.current = null;
+        }
         cleanupCallResources();
       };
     } catch (err: any) {
@@ -342,7 +402,7 @@ export function useGroupCall({ currentUserId }: UseGroupCallProps) {
       setCallError(`Could not join group call: ${err.message || 'Unknown error'}`);
       cleanupCallResources();
     }
-  }, [captureLocalMedia, facingMode, isMuted, isCameraEnabled, initRoomMesh, cleanupCallResources, currentUserId]);
+  }, [captureLocalMedia, facingMode, isMuted, initRoomMesh, cleanupCallResources, currentUserId]);
 
   /**
    * Action: Leave group call safely, updating status in Supabase and closing WebRTC
@@ -423,6 +483,19 @@ export function useGroupCall({ currentUserId }: UseGroupCallProps) {
       }
     }
   }, [facingMode, activeRoom, captureLocalMedia]);
+
+  // Handle browser window unload safely for group calls to prevent stale participant records
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      if (activeRoomRef.current && currentUserId) {
+        groupSignalingService.leaveCallRoom(activeRoomRef.current.id, currentUserId);
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [currentUserId]);
 
   /**
    * Listen to globally broadcast incoming call notifications inside joined group channels
