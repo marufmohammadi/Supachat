@@ -83,9 +83,16 @@ function createMockMediaStream(video: boolean): MediaStream {
 interface UseCallProps {
   currentUserId: string;
   currentUserProfile?: Profile;
+  onCallEvent?: (
+    callType: CallType,
+    status: CallStatus,
+    duration: number,
+    callerId: string,
+    receiverId: string
+  ) => void;
 }
 
-export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
+export function useCall({ currentUserId, currentUserProfile, onCallEvent }: UseCallProps) {
   const [activeCall, setActiveCall] = useState<Call | null>(null);
   const [callRole, setCallRole] = useState<'caller' | 'receiver' | null>(null);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
@@ -110,6 +117,8 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
   const signalingCleanupRef = useRef<(() => void) | null>(null);
   const callUpdatesCleanupRef = useRef<(() => void) | null>(null);
   const durationIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const ringingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const hasTriggeredEventRef = useRef<boolean>(false);
   const isBusyRef = useRef<boolean>(false);
   const iceCandidatesQueueRef = useRef<RTCIceCandidateInit[]>([]);
   const processedSignalsRef = useRef<Set<string>>(new Set());
@@ -154,6 +163,12 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
     if (durationIntervalRef.current) {
       clearInterval(durationIntervalRef.current);
       durationIntervalRef.current = null;
+    }
+
+    // Clear ringing timeout
+    if (ringingTimeoutRef.current) {
+      clearTimeout(ringingTimeoutRef.current);
+      ringingTimeoutRef.current = null;
     }
 
     // Stop all media tracks
@@ -236,6 +251,12 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
     }
     isCallEndingRef.current = true;
 
+    // Clear ringing timeout
+    if (ringingTimeoutRef.current) {
+      clearTimeout(ringingTimeoutRef.current);
+      ringingTimeoutRef.current = null;
+    }
+
     // Ensure customStatus is a valid string of type CallStatus and not a React/synthetic event object
     const finalStatus = (typeof customStatus === 'string' ? customStatus : null) || (
       activeCall.status === 'accepted' ? 'ended' : (callRole === 'caller' ? 'missed' : 'rejected')
@@ -246,6 +267,12 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
     const receiverId = activeCall.receiver_id;
     const callType = activeCall.call_type;
     const isAccepted = activeCall.status === 'accepted';
+
+    // Trigger call event callback
+    if (callRole === 'caller' && onCallEvent && !hasTriggeredEventRef.current) {
+      hasTriggeredEventRef.current = true;
+      onCallEvent(callType, finalStatus, duration, callerId, receiverId);
+    }
     
     console.log(`[CALLS] Ending call ${callId} with status ${finalStatus}, duration ${duration}`);
     
@@ -548,6 +575,16 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
     setOtherPartyProfile(receiverProfile);
     setCallRole('caller');
     setCallDuration(0);
+    hasTriggeredEventRef.current = false;
+
+    // Set 30 seconds auto call timeout for ringing
+    if (ringingTimeoutRef.current) {
+      clearTimeout(ringingTimeoutRef.current);
+    }
+    ringingTimeoutRef.current = setTimeout(async () => {
+      console.log('[CALLS] Ringing timeout of 30 seconds reached. Automatically terminating with no_response.');
+      await endCall('no_response');
+    }, 30000);
 
     let mediaStream: MediaStream | null = null;
     try {
@@ -623,6 +660,11 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
 
         if (updatedCall.status === 'accepted') {
           console.log('[CALLS] Call was ACCEPTED by peer. Starting duration timer...');
+          // Clear ringing timeout
+          if (ringingTimeoutRef.current) {
+            clearTimeout(ringingTimeoutRef.current);
+            ringingTimeoutRef.current = null;
+          }
           // Start call duration counter
           if (!durationIntervalRef.current) {
             durationIntervalRef.current = setInterval(() => {
@@ -633,19 +675,37 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
         else if (
           updatedCall.status === 'ended' ||
           updatedCall.status === 'rejected' ||
+          updatedCall.status === 'declined' ||
           updatedCall.status === 'missed' ||
-          (updatedCall.status as any) === 'cancelled'
+          updatedCall.status === 'busy' ||
+          updatedCall.status === 'no_response' ||
+          (updatedCall.status as any) === 'cancelled' ||
+          (updatedCall.status as any) === 'cancelled_by_caller'
         ) {
           console.log(`[CALLS] Call reached ending status: ${updatedCall.status}`);
-          if (updatedCall.status === 'rejected') {
-            setCallError('Call rejected by recipient');
+          
+          // Clear ringing timeout
+          if (ringingTimeoutRef.current) {
+            clearTimeout(ringingTimeoutRef.current);
+            ringingTimeoutRef.current = null;
           }
-          cleanupCallResources(true);
-          loadCallHistory();
-        }
-        else if (updatedCall.status === 'busy') {
-          console.log('[CALLS] User is busy in another call');
-          setCallError('Recipient is currently busy on another call');
+
+          // Trigger onCallEvent if caller
+          if (callRole === 'caller' && onCallEvent && !hasTriggeredEventRef.current) {
+            hasTriggeredEventRef.current = true;
+            const finalDur = updatedCall.status === 'ended' ? callDuration : 0;
+            const finalStat = (updatedCall.status as CallStatus);
+            onCallEvent(updatedCall.call_type, finalStat, finalDur, updatedCall.caller_id, updatedCall.receiver_id);
+          }
+
+          if (updatedCall.status === 'rejected' || updatedCall.status === 'declined') {
+            setCallError('Call rejected by recipient');
+          } else if (updatedCall.status === 'busy') {
+            setCallError('Recipient is currently busy on another call');
+          } else if (updatedCall.status === 'no_response' || updatedCall.status === 'missed') {
+            setCallError('No response from recipient');
+          }
+          
           cleanupCallResources(true);
           loadCallHistory();
         }
@@ -860,8 +920,12 @@ export function useCall({ currentUserId, currentUserProfile }: UseCallProps) {
       if (
         updatedCall.status === 'ended' ||
         updatedCall.status === 'rejected' ||
+        updatedCall.status === 'declined' ||
         updatedCall.status === 'missed' ||
-        (updatedCall.status as any) === 'cancelled'
+        updatedCall.status === 'busy' ||
+        updatedCall.status === 'no_response' ||
+        (updatedCall.status as any) === 'cancelled' ||
+        (updatedCall.status as any) === 'cancelled_by_caller'
       ) {
         console.log(`[CALLS] Incoming call reached ending status: ${updatedCall.status}`);
         console.log('[CALLS] Realtime event received');

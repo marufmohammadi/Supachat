@@ -222,7 +222,7 @@ CREATE TABLE IF NOT EXISTS public.calls (
   caller_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE NOT NULL,
   receiver_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE NOT NULL,
   call_type TEXT NOT NULL CHECK (call_type IN ('audio', 'video')),
-  status TEXT NOT NULL CHECK (status IN ('ringing', 'accepted', 'rejected', 'missed', 'busy', 'ended')),
+  status TEXT NOT NULL CHECK (status IN ('ringing', 'accepted', 'rejected', 'missed', 'busy', 'ended', 'declined', 'no_response', 'cancelled_by_caller')),
   started_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()),
   ended_at TIMESTAMP WITH TIME ZONE,
   duration INTEGER DEFAULT 0
@@ -242,7 +242,7 @@ CREATE TABLE IF NOT EXISTS public.call_logs (
   caller_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE NOT NULL,
   receiver_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE NOT NULL,
   call_type TEXT NOT NULL CHECK (call_type IN ('audio', 'video')),
-  status TEXT NOT NULL CHECK (status IN ('ringing', 'accepted', 'rejected', 'missed', 'busy', 'ended')),
+  status TEXT NOT NULL CHECK (status IN ('ringing', 'accepted', 'rejected', 'missed', 'busy', 'ended', 'declined', 'no_response', 'cancelled_by_caller')),
   duration INTEGER DEFAULT 0,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );

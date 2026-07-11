@@ -9,7 +9,7 @@ import { Profile, Group, Message } from '../types';
 import E2EEKeyManager from './E2EEKeyManager';
 
 // WebRTC Calling System Imports
-import { PhoneCall } from 'lucide-react';
+import { PhoneCall, Phone, PhoneMissed, Video } from 'lucide-react';
 import { useCall } from '../hooks/calls/useCall';
 import { CallButton } from './calls/CallButton';
 import { VideoCallButton } from './calls/VideoCallButton';
@@ -29,6 +29,7 @@ import { CallRoom as GroupCallRoom } from '../types/group-call';
 import { useWalkieTalkie } from '../hooks/group-call/useWalkieTalkie';
 import { WalkieTalkieScreen } from './group-calls/WalkieTalkieScreen';
 import { walkieTalkieSignalingService } from '../services/group-call/walkie-talkie/WalkieTalkieSignalingService';
+import { GroupCallMessageBubble } from './GroupCallMessageBubble';
 
 function getFriendlyDateHeader(dateStr: string): string {
   if (!dateStr) return 'Unknown Date';
@@ -106,6 +107,42 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
       id: currentUserId,
       username: currentUsername,
       avatar_url: currentUserAvatar
+    },
+    onCallEvent: (callType, status, duration, callerId, receiverId) => {
+      const callEventPayload = `[CALL_EVENT]:${callType}:${status}:${duration}:${callerId}:${receiverId}`;
+      const partnerId = currentUserId === callerId ? receiverId : callerId;
+      
+      if (isSandboxMode) {
+        const newMsg: Message = {
+          id: `m-sand-call-${Date.now()}`,
+          sender_id: currentUserId,
+          receiver_id: partnerId,
+          encrypted_body: callEventPayload,
+          is_encrypted: false,
+          created_at: new Date().toISOString(),
+          status: 'sent',
+          sender: {
+            id: currentUserId,
+            username: currentUsername,
+            avatar_url: currentUserAvatar,
+            created_at: new Date().toISOString()
+          }
+        };
+        setMessages(prev => [...prev, newMsg]);
+      } else {
+        supabase.from('messages').insert({
+          sender_id: currentUserId,
+          receiver_id: partnerId,
+          group_id: null,
+          encrypted_body: callEventPayload,
+          is_encrypted: false,
+          status: 'sent'
+        }).then(({ error }) => {
+          if (error) {
+            console.error('[CALLS] Failed to save call event message:', error);
+          }
+        });
+      }
     }
   });
 
@@ -135,7 +172,87 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
     toggleLocalCamera: toggleGroupLocalCamera,
     switchCamera: switchGroupCamera,
     rejectIncomingGroupCall,
-  } = useGroupCall({ currentUserId });
+  } = useGroupCall({
+    currentUserId,
+    onGroupCallEvent: (room, status, duration) => {
+      const callEventPayload = `[GROUP_CALL_EVENT]:${room.id}:${room.call_type}:${status}:${room.created_by}:${duration || 0}`;
+      console.log('[GROUP-CALL-EVENT] Triggered:', callEventPayload);
+      
+      if (isSandboxMode) {
+        if (status === 'ringing') {
+          const newMsg: Message = {
+            id: `m-sand-grp-call-${room.id}`,
+            sender_id: currentUserId,
+            group_id: room.group_id,
+            encrypted_body: callEventPayload,
+            is_encrypted: false,
+            created_at: new Date().toISOString(),
+            status: 'sent',
+            sender: {
+              id: currentUserId,
+              username: currentUsername,
+              avatar_url: currentUserAvatar,
+              created_at: new Date().toISOString()
+            }
+          };
+          setMessages(prev => [...prev, newMsg]);
+        } else if (status === 'ended') {
+          setMessages(prev => prev.map(m => 
+            m.encrypted_body && m.encrypted_body.startsWith(`[GROUP_CALL_EVENT]:${room.id}:`)
+              ? { ...m, encrypted_body: callEventPayload }
+              : m
+          ));
+        }
+      } else {
+        if (status === 'ringing') {
+          supabase.from('messages').insert({
+            sender_id: currentUserId,
+            group_id: room.group_id,
+            receiver_id: null,
+            encrypted_body: callEventPayload,
+            is_encrypted: false,
+            status: 'sent'
+          }).then(({ error }) => {
+            if (error) {
+              console.error('[CALLS] Failed to save group call event message:', error);
+            }
+          });
+        } else if (status === 'ended') {
+          supabase
+            .from('messages')
+            .select('id, encrypted_body')
+            .eq('group_id', room.group_id)
+            .eq('is_encrypted', false)
+            .like('encrypted_body', `[GROUP_CALL_EVENT]:${room.id}:%`)
+            .maybeSingle()
+            .then(({ data: existingMsg, error: selError }) => {
+              if (!selError && existingMsg) {
+                supabase
+                  .from('messages')
+                  .update({
+                    encrypted_body: callEventPayload
+                  })
+                  .eq('id', existingMsg.id)
+                  .then(({ error: updError }) => {
+                    if (updError) {
+                      console.error('[CALLS] Failed to update group call event message:', updError);
+                    }
+                  });
+              } else {
+                supabase.from('messages').insert({
+                  sender_id: currentUserId,
+                  group_id: room.group_id,
+                  receiver_id: null,
+                  encrypted_body: callEventPayload,
+                  is_encrypted: false,
+                  status: 'sent'
+                });
+              }
+            });
+        }
+      }
+    }
+  });
 
   // Walkie-Talkie Mode Hook
   const {
@@ -1715,6 +1832,69 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
     );
   };
 
+  const parseCallEvent = (msg: Message) => {
+    if (msg.is_encrypted) return null;
+    if (msg.encrypted_body && msg.encrypted_body.startsWith('[CALL_EVENT]:')) {
+      const parts = msg.encrypted_body.split(':');
+      let status = parts[2];
+      if (status === 'rejected') {
+        status = 'declined';
+      }
+      return {
+        callType: parts[1] as 'audio' | 'video',
+        status: status,
+        duration: parseInt(parts[3] || '0', 10),
+        callerId: parts[4],
+        receiverId: parts[5]
+      };
+    }
+    return null;
+  };
+
+  const parseGroupCallEvent = (msg: Message) => {
+    if (msg.is_encrypted) return null;
+    if (msg.encrypted_body && msg.encrypted_body.startsWith('[GROUP_CALL_EVENT]:')) {
+      const parts = msg.encrypted_body.split(':');
+      return {
+        roomId: parts[1],
+        callType: parts[2] as 'audio' | 'video',
+        status: parts[3] as 'ringing' | 'active' | 'ended',
+        createdBy: parts[4],
+        duration: parseInt(parts[5] || '0', 10)
+      };
+    }
+    return null;
+  };
+
+  const handleCallEventClick = async (callType: 'audio' | 'video', otherUserId: string) => {
+    let profile = profiles.find(p => p.id === otherUserId);
+    if (!profile) {
+      try {
+        const { data, error } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', otherUserId)
+          .single();
+        if (!error && data) {
+          profile = data as Profile;
+        }
+      } catch (err) {
+        console.warn('Error fetching profile for callback:', err);
+      }
+    }
+
+    if (!profile) {
+      profile = {
+        id: otherUserId,
+        username: 'User ' + otherUserId.substring(0, 4),
+        avatar_url: `https://api.dicebear.com/7.x/adventurer/svg?seed=${otherUserId}`
+      } as any;
+    }
+
+    console.log(`[CALLS] Initiating callback ${callType} to user ${profile.username}`);
+    startCall(profile, callType);
+  };
+
   // Create Chat Group Handler
   const handleCreateGroup = async (e: FormEvent) => {
     e.preventDefault();
@@ -2261,6 +2441,117 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
               const currentDateStr = getFriendlyDateHeader(msg.created_at);
               const prevDateStr = prevMsg ? getFriendlyDateHeader(prevMsg.created_at) : null;
               const showDateHeader = currentDateStr !== prevDateStr;
+
+              const groupCallInfo = parseGroupCallEvent(msg);
+              if (groupCallInfo) {
+                return (
+                  <GroupCallMessageBubble
+                    key={msg.id}
+                    msg={msg}
+                    info={groupCallInfo}
+                    currentUserId={currentUserId}
+                    currentUsername={currentUsername}
+                    currentUserAvatar={currentUserAvatar}
+                    isSandboxMode={isSandboxMode}
+                    onJoin={joinGroupCall}
+                    onStart={startGroupCall}
+                    showDateHeader={showDateHeader}
+                    currentDateStr={currentDateStr}
+                  />
+                );
+              }
+
+              const callInfo = parseCallEvent(msg);
+              if (callInfo) {
+                const { callType, status, duration, callerId, receiverId } = callInfo;
+                const isViewerCaller = currentUserId === callerId;
+                let displayText = '';
+                let showDuration = false;
+                let isMissedOrFailed = false;
+
+                if (status === 'ended' || status === 'accepted') {
+                  displayText = callType === 'video' ? 'Video Call' : 'Audio Call';
+                  showDuration = true;
+                } else if (status === 'declined') {
+                  displayText = isViewerCaller ? 'Declined' : 'Declined Incoming Call';
+                  isMissedOrFailed = !isViewerCaller;
+                } else if (status === 'busy') {
+                  displayText = isViewerCaller ? 'Busy' : 'Already in Call';
+                } else if (status === 'no_response' || status === 'missed') {
+                  displayText = isViewerCaller ? 'No Response' : 'Missed Call';
+                  isMissedOrFailed = !isViewerCaller;
+                } else if (status === 'cancelled_by_caller') {
+                  displayText = 'Cancelled Call';
+                  isMissedOrFailed = !isViewerCaller;
+                } else {
+                  displayText = callType === 'video' ? 'Video Call' : 'Audio Call';
+                }
+
+                const formatDuration = (secs: number) => {
+                  const mins = Math.floor(secs / 60);
+                  const remainingSecs = secs % 60;
+                  return `${mins.toString().padStart(2, '0')}:${remainingSecs.toString().padStart(2, '0')}`;
+                };
+
+                const targetUserId = isViewerCaller ? receiverId : callerId;
+
+                return (
+                  <div key={msg.id} className="flex flex-col gap-4">
+                    {showDateHeader && (
+                      <div className="flex justify-center my-2 select-none animate-fade-in sticky top-2 z-20">
+                        <span className="bg-[#182229]/90 backdrop-blur-sm border border-emerald-500/20 text-[#00a884] text-[10px] sm:text-[11px] font-bold px-3 py-1 rounded-full uppercase tracking-wider shadow-md">
+                          {currentDateStr}
+                        </span>
+                      </div>
+                    )}
+
+                    <div className={`flex ${isMe ? 'justify-end' : 'justify-start'} animate-fade-in`}>
+                      <button
+                        onClick={() => handleCallEventClick(callType, targetUserId)}
+                        className={`max-w-[75%] sm:max-w-[70%] rounded-2xl px-4 py-3 shadow-md flex items-center gap-3.5 relative border text-left cursor-pointer hover:opacity-95 transition-all ${
+                          isMe 
+                            ? 'bg-[#005c4b] border-emerald-600/30 text-white rounded-tr-none' 
+                            : 'bg-[#202c33] border-gray-700/50 text-gray-200 rounded-tl-none'
+                        }`}
+                        style={{ width: '280px' }}
+                      >
+                        <div className={`p-2 rounded-full shrink-0 ${
+                          isMissedOrFailed 
+                            ? 'bg-rose-500/20 text-rose-400' 
+                            : isMe 
+                              ? 'bg-emerald-500/20 text-emerald-300' 
+                              : 'bg-blue-500/20 text-blue-400'
+                        }`}>
+                          {callType === 'video' ? (
+                            <Video className="w-5 h-5" />
+                          ) : isMissedOrFailed ? (
+                            <PhoneMissed className="w-5 h-5" />
+                          ) : (
+                            <Phone className="w-5 h-5" />
+                          )}
+                        </div>
+
+                        <div className="flex-1 min-w-0">
+                          <h4 className="text-[13px] font-bold tracking-wide leading-tight truncate">
+                            {displayText}
+                          </h4>
+                          <p className="text-[11px] text-gray-400/90 mt-0.5 flex items-center gap-1">
+                            {showDuration ? (
+                              <span>Duration: {formatDuration(duration)}</span>
+                            ) : (
+                              <span>{status === 'cancelled_by_caller' ? 'Cancelled' : status === 'declined' ? 'Declined' : status === 'busy' ? 'Busy' : 'No Answer'}</span>
+                            )}
+                          </p>
+                        </div>
+
+                        <div className="text-[10px] text-gray-400/80 font-mono self-end shrink-0">
+                          {new Date(msg.created_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true })}
+                        </div>
+                      </button>
+                    </div>
+                  </div>
+                );
+              }
 
               return (
                 <div key={msg.id} className="flex flex-col gap-4">

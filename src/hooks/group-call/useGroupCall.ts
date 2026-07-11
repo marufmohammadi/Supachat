@@ -6,9 +6,14 @@ import { CallRoom, CallParticipant, GroupCallSignal, GroupCallType } from '../..
 
 interface UseGroupCallProps {
   currentUserId: string;
+  onGroupCallEvent?: (
+    room: CallRoom,
+    status: 'ringing' | 'active' | 'ended',
+    duration?: number
+  ) => void;
 }
 
-export function useGroupCall({ currentUserId }: UseGroupCallProps) {
+export function useGroupCall({ currentUserId, onGroupCallEvent }: UseGroupCallProps) {
   // Call State
   const [activeRoom, setActiveRoom] = useState<CallRoom | null>(null);
   const [participants, setParticipants] = useState<CallParticipant[]>([]);
@@ -35,6 +40,12 @@ export function useGroupCall({ currentUserId }: UseGroupCallProps) {
   const durationIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const fallbackIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const meshCleanupRef = useRef<(() => void) | null>(null);
+  const callDurationRef = useRef<number>(0);
+  const onGroupCallEventRef = useRef<typeof onGroupCallEvent>(onGroupCallEvent);
+
+  useEffect(() => {
+    onGroupCallEventRef.current = onGroupCallEvent;
+  }, [onGroupCallEvent]);
 
   // Keep activeRoomRef in sync
   useEffect(() => {
@@ -91,8 +102,13 @@ export function useGroupCall({ currentUserId }: UseGroupCallProps) {
     if (activeRoom && (activeRoom.status === 'active' || activeRoom.status === 'ringing')) {
       if (!durationIntervalRef.current) {
         setCallDuration(0);
+        callDurationRef.current = 0;
         durationIntervalRef.current = setInterval(() => {
-          setCallDuration((prev) => prev + 1);
+          setCallDuration((prev) => {
+            const next = prev + 1;
+            callDurationRef.current = next;
+            return next;
+          });
         }, 1000);
       }
     } else {
@@ -295,6 +311,9 @@ export function useGroupCall({ currentUserId }: UseGroupCallProps) {
     const roomCleanup = groupSignalingService.subscribeToRoomUpdates(room.id, (updatedRoom) => {
       console.log('[GROUP-CALL] Room update received:', updatedRoom);
       if (updatedRoom.status === 'ended') {
+        if (onGroupCallEventRef.current) {
+          onGroupCallEventRef.current(updatedRoom, 'ended', callDurationRef.current);
+        }
         cleanupCallResources();
       } else {
         setActiveRoom(updatedRoom);
@@ -337,6 +356,10 @@ export function useGroupCall({ currentUserId }: UseGroupCallProps) {
         groupSignalingService.createCallRoom(groupId, callType, currentUserId)
       ]);
       console.log('[GROUP-CALL] Media captured and room created successfully:', room);
+
+      if (onGroupCallEventRef.current) {
+        onGroupCallEventRef.current(room, 'ringing', 0);
+      }
 
       // 3. Insert local participant row to signal we have joined
       await groupSignalingService.joinCallRoom(room.id, currentUserId, isMuted, nextCameraEnabled);
