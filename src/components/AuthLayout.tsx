@@ -5,9 +5,10 @@ import { Key, Mail, Lock, User, ShieldAlert, Sparkles, MessageSquare, Database }
 interface AuthLayoutProps {
   onAuthSuccess: (session: any, isSandboxMode: boolean) => void;
   onOpenDbSetup: () => void;
+  isDbOffline?: boolean;
 }
 
-export default function AuthLayout({ onAuthSuccess, onOpenDbSetup }: AuthLayoutProps) {
+export default function AuthLayout({ onAuthSuccess, onOpenDbSetup, isDbOffline = false }: AuthLayoutProps) {
   const [isSignUp, setIsSignUp] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -115,7 +116,11 @@ export default function AuthLayout({ onAuthSuccess, onOpenDbSetup }: AuthLayoutP
       }
     } catch (err: any) {
       console.error('Authentication error:', err);
-      setErrorText(err.message || 'An error occurred during authentication.');
+      let errMsg = err?.message || 'An error occurred during authentication.';
+      if (errMsg.toLowerCase().includes('failed to fetch')) {
+        errMsg = 'Failed to fetch (Database connection blocked/unreachable). Privacy ad-blockers (such as Brave Shield or uBlock Origin) frequently block Supabase connection domains. Please temporarily disable ad-blockers for this tab, check your internet, or enter the Sandbox Mode below!';
+      }
+      setErrorText(errMsg);
     } finally {
       setLoading(false);
     }
@@ -153,6 +158,27 @@ export default function AuthLayout({ onAuthSuccess, onOpenDbSetup }: AuthLayoutP
           <h2 className="text-2xl font-bold text-white tracking-tight">WhatsApp Clone</h2>
           <p className="text-sm text-gray-400">Real-Time Messaging & Client-to-Client Encryption</p>
         </div>
+
+        {isDbOffline && (
+          <div className="p-3.5 bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs rounded-xl space-y-2 text-left">
+            <div className="flex items-center gap-2 font-semibold">
+              <ShieldAlert className="w-4 h-4 text-amber-400" />
+              <span>Cloud Database Offline / Blocked</span>
+            </div>
+            <p className="text-[11px] text-gray-300 leading-relaxed font-sans">
+              Unable to reach the Supabase cloud database (Failed to fetch). This is often caused by <b>ad-blockers</b> (like Brave, uBlock Origin) blocking third-party database connections, firewall limits, or being offline.
+            </p>
+            <button
+              type="button"
+              id="offline-suggest-sandbox-btn"
+              onClick={startSandboxMode}
+              className="w-full mt-1 py-1.5 px-3 bg-amber-500 hover:bg-amber-600 text-[#0b141a] font-bold text-xs rounded-lg transition-all cursor-pointer flex items-center justify-center gap-1"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              Enter Interactive Demo Sandbox (No Setup Required)
+            </button>
+          </div>
+        )}
 
         {errorText && (
           <div className="p-3.5 bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs rounded-xl flex flex-col gap-2">

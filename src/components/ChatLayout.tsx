@@ -168,6 +168,13 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
   // State Management
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
+  const [lastMessages, setLastMessages] = useState<{
+    [chatId: string]: {
+      text: string;
+      created_at: string;
+      is_encrypted: boolean;
+    }
+  }>({});
   const [activeChat, setActiveChat] = useState<{ type: 'direct' | 'group'; id: string } | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputMessage, setInputMessage] = useState('');
@@ -347,6 +354,18 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
         }
       ];
       setMessages(preloadMessages);
+      setLastMessages({
+        'bob-key-456': {
+          text: 'Welcome to E2EE Chat! Feel free to write anything. The message you send to me will be hybrid-encrypted on your computer using my RSA-2048 public key before passing through any servers!',
+          created_at: new Date(Date.now() - 3600000).toISOString(),
+          is_encrypted: true
+        },
+        'crypto-group-100': {
+          text: 'Our group chats are linked with encrypted signatures too. Pretty neat.',
+          created_at: new Date(Date.now() - 80000).toISOString(),
+          is_encrypted: true
+        }
+      });
       setActiveChat({ type: 'direct', id: 'bob-key-456' });
     } else {
       // Real database fetch
@@ -421,10 +440,14 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
         .from('group_members')
         .select('groups (*)')
         .eq('user_id', currentUserId);
+      let joinedGroups: Group[] = [];
       if (gData) {
-        const joinedGroups = gData.map((item: any) => item.groups).filter(Boolean);
+        joinedGroups = gData.map((item: any) => item.groups).filter(Boolean);
         setGroups(joinedGroups);
       }
+
+      // 2.5 Fetch last messages for direct/group chats to drive ordering and previews
+      await fetchLastMessages(joinedGroups);
 
       // 3. Fetch initial unread counts across all chats
       await fetchUnreadCounts();
@@ -738,6 +761,87 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
     }
   };
 
+  const formatLastMessageTime = (dateStr?: string): string => {
+    if (!dateStr) return '';
+    try {
+      const dateObj = new Date(dateStr);
+      if (isNaN(dateObj.getTime())) return '';
+      const today = new Date();
+      const yesterday = new Date();
+      yesterday.setDate(today.getDate() - 1);
+      
+      const isSameDay = (d1: Date, d2: Date) => 
+        d1.getFullYear() === d2.getFullYear() &&
+        d1.getMonth() === d2.getMonth() &&
+        d1.getDate() === d2.getDate();
+
+      if (isSameDay(dateObj, today)) {
+        return dateObj.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true });
+      } else if (isSameDay(dateObj, yesterday)) {
+        return 'Yesterday';
+      } else {
+        return dateObj.toLocaleDateString([], { month: 'numeric', day: 'numeric', year: '2-digit' });
+      }
+    } catch {
+      return '';
+    }
+  };
+
+  const fetchLastMessages = async (joinedGroups: Group[]) => {
+    if (isSandboxMode || !currentUserId) return;
+    try {
+      const groupIds = joinedGroups.map(g => g.id);
+      let orFilter = `sender_id.eq.${currentUserId},receiver_id.eq.${currentUserId}`;
+      if (groupIds.length > 0) {
+        orFilter += `,group_id.in.(${groupIds.join(',')})`;
+      }
+      
+      const { data, error } = await supabase
+        .from('messages')
+        .select('*')
+        .or(orFilter)
+        .order('created_at', { ascending: false });
+        
+      if (error) {
+        console.warn('Could not fetch last messages:', error);
+        return;
+      }
+      
+      if (data) {
+        const map: { [id: string]: any } = {};
+        const decryptPromises: Promise<any>[] = [];
+        
+        data.forEach((msg: Message) => {
+          const chatId = msg.group_id || (msg.sender_id === currentUserId ? msg.receiver_id : msg.sender_id);
+          if (chatId && !map[chatId]) {
+            map[chatId] = msg;
+            decryptPromises.push(
+              decryptPreviewText(msg).then((decrypted) => {
+                map[chatId].decryptedText = decrypted;
+              })
+            );
+          }
+        });
+        
+        await Promise.all(decryptPromises);
+        
+        const lastMsgsState: { [chatId: string]: { text: string; created_at: string; is_encrypted: boolean } } = {};
+        Object.keys(map).forEach((chatId) => {
+          const msg = map[chatId];
+          lastMsgsState[chatId] = {
+            text: msg.decryptedText || msg.encrypted_body,
+            created_at: msg.created_at,
+            is_encrypted: msg.is_encrypted
+          };
+        });
+        
+        setLastMessages(lastMsgsState);
+      }
+    } catch (err) {
+      console.error('Error in fetchLastMessages:', err);
+    }
+  };
+
   // Triggers desktop browser push and in-app popup notifications
   const triggerNotificationPopup = async (msg: Message) => {
     let name = 'Secured Client';
@@ -963,6 +1067,27 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
           if (payload.eventType === 'INSERT') {
             const newMsg = payload.new as Message;
             if (!newMsg) return;
+
+            // Decrypt preview text and update lastMessages state instantly to trigger WhatsApp-style top-sorting
+            decryptPreviewText(newMsg).then((decrypted) => {
+              const chatId = newMsg.group_id || (newMsg.sender_id === currentUserId ? newMsg.receiver_id : newMsg.sender_id);
+              if (chatId) {
+                setLastMessages(prev => {
+                  const currentLast = prev[chatId];
+                  if (!currentLast || new Date(newMsg.created_at) >= new Date(currentLast.created_at)) {
+                    return {
+                      ...prev,
+                      [chatId]: {
+                        text: decrypted,
+                        created_at: newMsg.created_at,
+                        is_encrypted: newMsg.is_encrypted
+                      }
+                    };
+                  }
+                  return prev;
+                });
+              }
+            });
 
             const isFromMe = newMsg.sender_id === currentUserId;
             const currentActiveChat = activeChatRef.current;
@@ -1313,6 +1438,16 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
 
       setMessages(prev => [...prev, newMsg]);
 
+      // Update lastMessages instantly for ordering and preview
+      setLastMessages(prev => ({
+        ...prev,
+        [activeChat.id]: {
+          text: originalText,
+          created_at: newMsg.created_at,
+          is_encrypted: true
+        }
+      }));
+
       // Simulate live tick state transitions matching WhatsApp:
       // 1. Sent (instant)
       // 2. Delivered (after 400ms)
@@ -1371,6 +1506,18 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
         (replyMsg as any).simulatedRawCipher = window.btoa(`SALT::AES-GCM::${replyText}`);
 
         setMessages(prev => [...prev, replyMsg]);
+
+        // Update lastMessages instantly for ordering and preview
+        const replyChatId = activeChat.type === 'direct' ? replySenderId : activeChat.id;
+        setLastMessages(prev => ({
+          ...prev,
+          [replyChatId]: {
+            text: replyText,
+            created_at: replyMsg.created_at,
+            is_encrypted: true
+          }
+        }));
+
         triggerNotificationPopup(replyMsg);
       }, 1500);
 
@@ -1429,6 +1576,16 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
 
         // Append to state immediately for sub-millisecond local feedback
         setMessages(prev => [...prev, optimisticMsg]);
+
+        // Update lastMessages instantly for instant top-sorting and preview update
+        setLastMessages(prev => ({
+          ...prev,
+          [activeChat.id]: {
+            text: originalText,
+            created_at: optimisticMsg.created_at,
+            is_encrypted: isEncrypted
+          }
+        }));
 
         // Dispatch write to database in the background
         console.log('[DEBUG] Dispatching message insert to database...', {
@@ -1658,6 +1815,31 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
     })
     .map(([_, info]) => (info as { username: string; lastActive: number }).username);
 
+  // Sort conversations by latest activity in a WhatsApp-style priority sorting
+  const sortedProfiles = [...profiles].sort((a, b) => {
+    const lastA = lastMessages[a.id]?.created_at;
+    const lastB = lastMessages[b.id]?.created_at;
+    if (lastA && lastB) {
+      return new Date(lastB).getTime() - new Date(lastA).getTime();
+    }
+    if (lastA) return -1;
+    if (lastB) return 1;
+    // Fallback: alphabetical by username
+    return a.username.localeCompare(b.username);
+  });
+
+  const sortedGroups = [...groups].sort((a, b) => {
+    const lastA = lastMessages[a.id]?.created_at;
+    const lastB = lastMessages[b.id]?.created_at;
+    if (lastA && lastB) {
+      return new Date(lastB).getTime() - new Date(lastA).getTime();
+    }
+    if (lastA) return -1;
+    if (lastB) return 1;
+    // Fallback: alphabetical by name
+    return a.name.localeCompare(b.name);
+  });
+
   return (
     <div className="flex h-[100dvh] w-full bg-[#0b141a] overflow-hidden text-gray-200 font-sans">
       
@@ -1739,18 +1921,27 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
         {dbStatus === 'error' && (
           <div className="m-3 p-3 bg-rose-500/15 border border-rose-500/20 rounded-xl space-y-2 text-left">
             <div className="flex gap-2 items-center text-rose-300 text-xs font-semibold">
-              <AlertCircle className="w-4 h-4" /> Database Sync Blocked
+              <AlertCircle className="w-4 h-4" /> {dbErrorString?.toLowerCase().includes('failed to fetch') ? 'Database Connection Unreachable' : 'Database Sync Blocked'}
             </div>
             <p className="text-[11px] text-rose-200/90 leading-relaxed">
-              Required profiles / messages tables. Create them with the setup guide.
+              {dbErrorString?.toLowerCase().includes('failed to fetch')
+                ? 'Unable to connect to the cloud database (Failed to fetch). This is usually caused by ad-blockers (like Brave or uBlock Origin) blocking third-party Supabase connections, or lack of internet.'
+                : 'Required profiles / messages tables. Create them with the setup guide.'
+              }
             </p>
-            <button
-              id="sidebar-troubleshoot-btn"
-              onClick={onOpenDbSetup}
-              className="w-full py-1 px-2.5 bg-rose-500 hover:bg-rose-600 text-white rounded text-[10px] font-bold transition-all cursor-pointer"
-            >
-              Open SQL Console Guide
-            </button>
+            {dbErrorString?.toLowerCase().includes('failed to fetch') ? (
+              <p className="text-[10px] text-gray-400 font-sans leading-relaxed">
+                💡 Try turning off ad-blockers for this tab, or sign out and enter the <b>Interactive Demo Sandbox</b> mode for a full offline experience.
+              </p>
+            ) : (
+              <button
+                id="sidebar-troubleshoot-btn"
+                onClick={onOpenDbSetup}
+                className="w-full py-1 px-2.5 bg-rose-500 hover:bg-rose-600 text-white rounded text-[10px] font-bold transition-all cursor-pointer"
+              >
+                Open SQL Console Guide
+              </button>
+            )}
           </div>
         )}
 
@@ -1822,7 +2013,7 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
               <div className="px-2 py-3">
                 <span className="text-[10px] font-bold text-gray-500 uppercase px-2 tracking-wider">Direct Channels</span>
                 <div className="space-y-1 mt-2">
-                  {profiles
+                  {sortedProfiles
                     .filter(p => !searchQuery || p.username.toLowerCase().includes(searchQuery.toLowerCase()))
                     .map(profile => {
                       const isActive = activeChat?.type === 'direct' && activeChat.id === profile.id;
@@ -1848,17 +2039,28 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
                           </div>
 
                           <div className="flex-1 min-w-0">
-                            <div className="flex items-center justify-between">
-                              <h5 className="text-xs font-semibold truncate text-[#f0f2f5]">{profile.username}</h5>
-                              {targetHasKeys ? (
-                                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" title="E2EE Active" />
-                              ) : (
-                                <Shield className="w-3.5 h-3.5 text-amber-500/60 shrink-0" title="Encryption keys not set" />
-                              )}
+                            <div className="flex items-center justify-between gap-1">
+                              <h5 className="text-xs font-semibold truncate text-[#f0f2f5] flex-1">{profile.username}</h5>
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                {lastMessages[profile.id] && (
+                                  <span className="text-[9px] text-gray-500 font-mono">
+                                    {formatLastMessageTime(lastMessages[profile.id].created_at)}
+                                  </span>
+                                )}
+                                {targetHasKeys ? (
+                                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" title="E2EE Active" />
+                                ) : (
+                                  <Shield className="w-3.5 h-3.5 text-amber-500/60" title="Encryption keys not set" />
+                                )}
+                              </div>
                             </div>
                             <div className="flex items-center justify-between mt-0.5">
-                              <p className="text-[10px] text-gray-400 truncate font-mono">
-                                {targetHasKeys ? 'RSA-2048 Channel Active' : 'No public catalog yet'}
+                              <p className="text-[10px] text-gray-400 truncate font-sans max-w-[80%]">
+                                {lastMessages[profile.id] ? (
+                                  lastMessages[profile.id].text
+                                ) : (
+                                  targetHasKeys ? 'RSA-2048 Channel Active' : 'No public catalog yet'
+                                )}
                               </p>
                               {unreadCounts[profile.id] > 0 && (
                                 <span className="bg-emerald-500 text-black text-[9px] font-bold px-1.5 py-0.5 rounded-full shrink-0 animate-pulse select-none min-w-[16px] text-center">
@@ -1881,7 +2083,7 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
               <div className="px-2 py-3">
                 <span className="text-[10px] font-bold text-gray-500 uppercase px-2 tracking-wider">Group Channels</span>
                 <div className="space-y-1 mt-2">
-                  {groups
+                  {sortedGroups
                     .filter(g => !searchQuery || g.name.toLowerCase().includes(searchQuery.toLowerCase()))
                     .map(group => {
                       const isActive = activeChat?.type === 'group' && activeChat.id === group.id;
@@ -1901,13 +2103,24 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
                           />
 
                           <div className="flex-1 min-w-0">
-                            <div className="flex items-center justify-between">
-                              <h5 className="text-xs font-semibold truncate text-[#f0f2f5]">{group.name}</h5>
-                              <Users className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                            <div className="flex items-center justify-between gap-1">
+                              <h5 className="text-xs font-semibold truncate text-[#f0f2f5] flex-1">{group.name}</h5>
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                {lastMessages[group.id] && (
+                                  <span className="text-[9px] text-gray-500 font-mono">
+                                    {formatLastMessageTime(lastMessages[group.id].created_at)}
+                                  </span>
+                                )}
+                                <Users className="w-3.5 h-3.5 text-emerald-400" />
+                              </div>
                             </div>
                             <div className="flex items-center justify-between mt-0.5">
-                              <p className="text-[10px] text-gray-400 truncate font-mono">
-                                Group Chat Room
+                              <p className="text-[10px] text-gray-400 truncate font-sans max-w-[80%]">
+                                {lastMessages[group.id] ? (
+                                  lastMessages[group.id].text
+                                ) : (
+                                  'Group Chat Room'
+                                )}
                               </p>
                               {unreadCounts[group.id] > 0 && (
                                 <span className="bg-emerald-500 text-black text-[9px] font-bold px-1.5 py-0.5 rounded-full shrink-0 animate-pulse select-none min-w-[16px] text-center">

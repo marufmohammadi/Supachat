@@ -9,6 +9,7 @@ export default function App() {
   const [isSandboxMode, setIsSandboxMode] = useState(false);
   const [isDbSetupOpen, setIsDbSetupOpen] = useState(false);
   const [initializing, setInitializing] = useState(true);
+  const [isDbOffline, setIsDbOffline] = useState(false);
 
   useEffect(() => {
     // Check active session on startup if not in sandbox mode
@@ -19,8 +20,13 @@ export default function App() {
           setSession(activeSession);
           setIsSandboxMode(false);
         }
-      } catch (err) {
+        setIsDbOffline(false);
+      } catch (err: any) {
         console.warn('Silent session restore warning (Supabase may still be cold-starting):', err);
+        const errMsg = err?.message || '';
+        if (errMsg.toLowerCase().includes('failed to fetch')) {
+          setIsDbOffline(true);
+        }
       } finally {
         setInitializing(false);
       }
@@ -77,6 +83,7 @@ export default function App() {
         <AuthLayout 
           onAuthSuccess={handleAuthSuccess}
           onOpenDbSetup={() => setIsDbSetupOpen(true)}
+          isDbOffline={isDbOffline}
         />
       )}
 
