@@ -524,4 +524,63 @@ BEGIN
   END IF;
 END $$;
 
+-- 11. CREATE USER DEVICES TABLE (WHATSAPP-STYLE DEVICE VERIFICATION)
+CREATE TABLE IF NOT EXISTS public.user_devices (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE NOT NULL,
+  device_id TEXT NOT NULL,
+  device_fingerprint TEXT NOT NULL,
+  device_name TEXT NOT NULL,
+  browser TEXT,
+  browser_version TEXT,
+  operating_system TEXT,
+  platform TEXT,
+  screen_resolution TEXT,
+  timezone TEXT,
+  language TEXT,
+  public_key_fingerprint TEXT,
+  login_time TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+  last_active TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+  login_count INT DEFAULT 1,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+  CONSTRAINT unique_user_device_fingerprint UNIQUE(user_id, device_fingerprint)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_devices_user_id ON public.user_devices(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_devices_fingerprint ON public.user_devices(device_fingerprint);
+
+-- Enable RLS for user_devices
+ALTER TABLE public.user_devices ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can view their own devices" ON public.user_devices;
+CREATE POLICY "Users can view their own devices" ON public.user_devices
+  FOR SELECT USING (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can insert their own devices" ON public.user_devices;
+CREATE POLICY "Users can insert their own devices" ON public.user_devices
+  FOR INSERT WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can update their own devices" ON public.user_devices;
+CREATE POLICY "Users can update their own devices" ON public.user_devices
+  FOR UPDATE USING (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can delete their own devices" ON public.user_devices;
+CREATE POLICY "Users can delete their own devices" ON public.user_devices
+  FOR DELETE USING (auth.uid() = user_id);
+
+GRANT ALL ON public.user_devices TO postgres, anon, authenticated, service_role;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' 
+      AND schemaname = 'public' 
+      AND tablename = 'user_devices'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.user_devices;
+  END IF;
+END $$;
+
 `;

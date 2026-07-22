@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, FormEvent } from 'react';
 import { 
   Search, Send, Lock, Plus, Users, ShieldCheck, CheckCheck, Check, LogOut, 
-  Database, UserCheck, Key, Shield, AlertCircle, Info, Sparkles, Archive, Image, FileText, Globe, ArrowLeft, Mic
+  Database, UserCheck, Key, Shield, AlertCircle, Info, Sparkles, Archive, Image, FileText, Globe, ArrowLeft, Mic, Laptop
 } from 'lucide-react';
+import { useDeviceVerification, LinkedDevicesModal } from '../features/device-verification';
 import { supabase, testSupabaseConnection } from '../lib/supabase';
 import { encryptMessage, decryptMessage, importPublicKey } from '../lib/crypto';
 import { Profile, Group, Message } from '../types';
@@ -30,6 +31,7 @@ import { useWalkieTalkie } from '../hooks/group-call/useWalkieTalkie';
 import { WalkieTalkieScreen } from './group-calls/WalkieTalkieScreen';
 import { walkieTalkieSignalingService } from '../services/group-call/walkie-talkie/WalkieTalkieSignalingService';
 import { GroupCallMessageBubble } from './GroupCallMessageBubble';
+import { formatCallEventPreview } from '../utils/callEventFormatter';
 
 function getFriendlyDateHeader(dateStr: string): string {
   if (!dateStr) return 'Unknown Date';
@@ -77,6 +79,20 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
   const currentUserEmail = session?.user?.email;
   const currentUsername = session?.user?.user_metadata?.username || currentUserEmail?.split('@')[0] || 'Me';
   const currentUserAvatar = session?.user?.user_metadata?.avatar_url || `https://api.dicebear.com/7.x/adventurer/svg?seed=${currentUserId}`;
+
+  // Device Verification System Hook
+  const {
+    devices: linkedDevicesList,
+    currentDevice: currentDeviceRecord,
+    newDeviceAlert,
+    loading: deviceLoading,
+    isModalOpen: showLinkedDevicesModal,
+    openModal: openLinkedDevicesModal,
+    closeModal: closeLinkedDevicesModal,
+    refreshDevices: refreshLinkedDevices,
+    logoutDevice: handleLogoutDevice,
+    dismissAlert: dismissDeviceAlert
+  } = useDeviceVerification({ currentUserId, isSandboxMode });
 
   // Call System State & Hook
   const [showCallHistory, setShowCallHistory] = useState(false);
@@ -129,6 +145,14 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
           }
         };
         setMessages(prev => [...prev, newMsg]);
+        setLastMessages(prev => ({
+          ...prev,
+          [partnerId]: {
+            text: formatCallEventPreview(callEventPayload, currentUserId),
+            created_at: newMsg.created_at,
+            is_encrypted: false
+          }
+        }));
       } else {
         supabase.from('messages').insert({
           sender_id: currentUserId,
@@ -196,12 +220,28 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
             }
           };
           setMessages(prev => [...prev, newMsg]);
+          setLastMessages(prev => ({
+            ...prev,
+            [room.group_id]: {
+              text: formatCallEventPreview(callEventPayload, currentUserId),
+              created_at: newMsg.created_at,
+              is_encrypted: false
+            }
+          }));
         } else if (status === 'ended') {
           setMessages(prev => prev.map(m => 
             m.encrypted_body && m.encrypted_body.startsWith(`[GROUP_CALL_EVENT]:${room.id}:`)
               ? { ...m, encrypted_body: callEventPayload }
               : m
           ));
+          setLastMessages(prev => ({
+            ...prev,
+            [room.group_id]: {
+              text: formatCallEventPreview(callEventPayload, currentUserId),
+              created_at: new Date().toISOString(),
+              is_encrypted: false
+            }
+          }));
         }
       } else {
         if (status === 'ringing') {
@@ -857,9 +897,12 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
 
   // Decrypts preview text for popups silently
   const decryptPreviewText = async (msg: Message) => {
-    if (!msg.is_encrypted) return msg.encrypted_body;
+    if (!msg.is_encrypted) {
+      return formatCallEventPreview(msg.encrypted_body, currentUserId);
+    }
     if (isSandboxMode) {
-      return (msg as any).decryptedText || '🔒 E2EE Ciphertext';
+      const text = (msg as any).decryptedText || '🔒 E2EE Ciphertext';
+      return formatCallEventPreview(text, currentUserId);
     }
 
     const myPrivateKeyJWK = localStorage.getItem(`whatsapp_private_key_jwk_${currentUserId}`);
@@ -869,10 +912,13 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
       ? msg.sender_encrypted_key 
       : msg.receiver_encrypted_key;
 
-    if (!encryptedKey) return msg.encrypted_body;
+    if (!encryptedKey) {
+      return formatCallEventPreview(msg.encrypted_body, currentUserId);
+    }
 
     try {
-      return await decryptMessage(msg.encrypted_body, encryptedKey, myPrivateKeyJWK);
+      const decrypted = await decryptMessage(msg.encrypted_body, encryptedKey, myPrivateKeyJWK);
+      return formatCallEventPreview(decrypted, currentUserId);
     } catch {
       return '🔒 Message Decryption Key mismatch';
     }
@@ -946,7 +992,7 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
         Object.keys(map).forEach((chatId) => {
           const msg = map[chatId];
           lastMsgsState[chatId] = {
-            text: msg.decryptedText || msg.encrypted_body,
+            text: msg.decryptedText || formatCallEventPreview(msg.encrypted_body, currentUserId),
             created_at: msg.created_at,
             is_encrypted: msg.is_encrypted
           };
@@ -2074,6 +2120,21 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
               <Database className="w-4 h-4" />
             </button>
 
+            {/* Linked Devices Trigger */}
+            <button
+              id="show-linked-devices-btn"
+              onClick={openLinkedDevicesModal}
+              title="Linked Devices & Security"
+              className={`p-2 rounded-full cursor-pointer hover:bg-gray-700/60 transition-colors relative ${
+                showLinkedDevicesModal ? 'text-emerald-400 bg-emerald-500/10' : 'text-gray-400 hover:text-white'
+              }`}
+            >
+              <Laptop className="w-4 h-4" />
+              {newDeviceAlert && (
+                <span className="absolute top-1 right-1 w-2 h-2 bg-emerald-400 rounded-full animate-ping" />
+              )}
+            </button>
+
             {/* Calling History Trigger */}
             <button
               id="show-calls-history-btn"
@@ -2237,7 +2298,7 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
                             <div className="flex items-center justify-between mt-0.5">
                               <p className="text-[10px] text-gray-400 truncate font-sans max-w-[80%]">
                                 {lastMessages[profile.id] ? (
-                                  lastMessages[profile.id].text
+                                  formatCallEventPreview(lastMessages[profile.id].text, currentUserId)
                                 ) : (
                                   targetHasKeys ? 'RSA-2048 Channel Active' : 'No public catalog yet'
                                 )}
@@ -2297,7 +2358,7 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
                             <div className="flex items-center justify-between mt-0.5">
                               <p className="text-[10px] text-gray-400 truncate font-sans max-w-[80%]">
                                 {lastMessages[group.id] ? (
-                                  lastMessages[group.id].text
+                                  formatCallEventPreview(lastMessages[group.id].text, currentUserId)
                                 ) : (
                                   'Group Chat Room'
                                 )}
@@ -3199,6 +3260,40 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Linked Devices Modal */}
+      <LinkedDevicesModal
+        isOpen={showLinkedDevicesModal}
+        onClose={closeLinkedDevicesModal}
+        devices={linkedDevicesList}
+        currentDevice={currentDeviceRecord}
+        onLogoutDevice={handleLogoutDevice}
+        onRefresh={refreshLinkedDevices}
+        loading={deviceLoading}
+      />
+
+      {/* New Device Linked Alert Toast */}
+      {newDeviceAlert && (
+        <div 
+          id="new-device-alert-toast"
+          className="fixed top-4 right-4 z-50 max-w-sm bg-[#1f2c34] border border-emerald-500/50 text-white p-3.5 rounded-2xl shadow-2xl flex items-start gap-3 animate-fade-in"
+        >
+          <div className="p-2 bg-emerald-500/15 rounded-xl text-emerald-400 shrink-0 mt-0.5">
+            <ShieldCheck className="w-5 h-5" />
+          </div>
+          <div className="flex-1 text-xs text-left">
+            <p className="font-semibold text-emerald-300">New Device Linked</p>
+            <p className="text-gray-200 mt-0.5">{newDeviceAlert.device_name}</p>
+            <p className="text-[10px] text-gray-400 mt-0.5">Linked today at {newDeviceAlert.login_time}</p>
+          </div>
+          <button 
+            onClick={dismissDeviceAlert} 
+            className="text-gray-400 hover:text-white p-1 hover:bg-[#2a3942] rounded-lg text-xs"
+          >
+            ✕
+          </button>
         </div>
       )}
 
