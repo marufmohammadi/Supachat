@@ -542,10 +542,23 @@ CREATE TABLE IF NOT EXISTS public.user_devices (
   login_time TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
   last_active TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
   login_count INT DEFAULT 1,
+  is_primary BOOLEAN DEFAULT false,
+  is_revoked BOOLEAN DEFAULT false,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
   CONSTRAINT unique_user_device_fingerprint UNIQUE(user_id, device_fingerprint)
 );
+
+-- Add columns if table existed without them
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='user_devices' AND column_name='is_primary') THEN
+    ALTER TABLE public.user_devices ADD COLUMN is_primary BOOLEAN DEFAULT false;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='user_devices' AND column_name='is_revoked') THEN
+    ALTER TABLE public.user_devices ADD COLUMN is_revoked BOOLEAN DEFAULT false;
+  END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_user_devices_user_id ON public.user_devices(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_devices_fingerprint ON public.user_devices(device_fingerprint);
@@ -571,6 +584,61 @@ CREATE POLICY "Users can delete their own devices" ON public.user_devices
 
 GRANT ALL ON public.user_devices TO postgres, anon, authenticated, service_role;
 
+-- 12. CREATE DEVICE LOGIN REQUESTS TABLE (PRIMARY DEVICE APPROVAL)
+CREATE TABLE IF NOT EXISTS public.device_login_requests (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE NOT NULL,
+  requester_device_id TEXT NOT NULL,
+  requester_device_name TEXT NOT NULL,
+  requester_browser TEXT,
+  requester_os TEXT,
+  requester_fingerprint TEXT NOT NULL,
+  qr_session_token TEXT,
+  status TEXT DEFAULT 'pending' NOT NULL, -- 'pending', 'approved', 'declined', 'expired'
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+  expires_at TIMESTAMP WITH TIME ZONE NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_device_login_requests_user ON public.device_login_requests(user_id);
+CREATE INDEX IF NOT EXISTS idx_device_login_requests_status ON public.device_login_requests(status);
+
+ALTER TABLE public.device_login_requests ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can view login requests" ON public.device_login_requests;
+CREATE POLICY "Users can view login requests" ON public.device_login_requests
+  FOR SELECT USING (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can create login requests" ON public.device_login_requests;
+CREATE POLICY "Users can create login requests" ON public.device_login_requests
+  FOR INSERT WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can update login requests" ON public.device_login_requests;
+CREATE POLICY "Users can update login requests" ON public.device_login_requests
+  FOR UPDATE USING (auth.uid() = user_id);
+
+GRANT ALL ON public.device_login_requests TO postgres, anon, authenticated, service_role;
+
+-- 13. CREATE QR LINK SESSIONS TABLE
+CREATE TABLE IF NOT EXISTS public.qr_link_sessions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE NOT NULL,
+  token TEXT UNIQUE NOT NULL,
+  status TEXT DEFAULT 'active' NOT NULL, -- 'active', 'used', 'expired'
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+  expires_at TIMESTAMP WITH TIME ZONE NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_qr_link_sessions_token ON public.qr_link_sessions(token);
+
+ALTER TABLE public.qr_link_sessions ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can manage QR sessions" ON public.qr_link_sessions;
+CREATE POLICY "Users can manage QR sessions" ON public.qr_link_sessions
+  FOR ALL USING (auth.uid() = user_id);
+
+GRANT ALL ON public.qr_link_sessions TO postgres, anon, authenticated, service_role;
+
+-- Enable Realtime
 DO $$
 BEGIN
   IF NOT EXISTS (
@@ -581,6 +649,25 @@ BEGIN
   ) THEN
     ALTER PUBLICATION supabase_realtime ADD TABLE public.user_devices;
   END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' 
+      AND schemaname = 'public' 
+      AND tablename = 'device_login_requests'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.device_login_requests;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' 
+      AND schemaname = 'public' 
+      AND tablename = 'qr_link_sessions'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.qr_link_sessions;
+  END IF;
 END $$;
+
 
 `;

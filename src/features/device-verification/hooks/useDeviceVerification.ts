@@ -1,17 +1,20 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { NewDeviceAlert, UserDevice } from '../types';
+import { NewDeviceAlert, UserDevice, DeviceLoginRequest } from '../types';
 import { getDeviceFingerprintDetails } from '../utils/deviceFingerprint';
 import { deviceService } from '../services/deviceService';
+import { supabase } from '../../../lib/supabase';
 
 interface UseDeviceVerificationProps {
   currentUserId: string;
   isSandboxMode: boolean;
+  onForceLogout?: () => void;
 }
 
-export function useDeviceVerification({ currentUserId, isSandboxMode }: UseDeviceVerificationProps) {
+export function useDeviceVerification({ currentUserId, isSandboxMode, onForceLogout }: UseDeviceVerificationProps) {
   const [devices, setDevices] = useState<UserDevice[]>([]);
   const [currentDevice, setCurrentDevice] = useState<UserDevice | null>(null);
   const [newDeviceAlert, setNewDeviceAlert] = useState<NewDeviceAlert | null>(null);
+  const [pendingLoginRequest, setPendingLoginRequest] = useState<DeviceLoginRequest | null>(null);
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const hasRegisteredRef = useRef(false);
@@ -68,6 +71,129 @@ export function useDeviceVerification({ currentUserId, isSandboxMode }: UseDevic
     registerAsync();
   }, [currentUserId, isSandboxMode]);
 
+  // INSTANT DEVICE REVOCATION LISTENER (Fixes bug where revoked device stayed logged in)
+  useEffect(() => {
+    if (!currentUserId || !currentDevice) return;
+
+    // Sandbox event listener
+    const handleSandboxRevoked = (e: CustomEvent) => {
+      const revokedId = e.detail?.deviceId;
+      if (revokedId === currentDevice.id) {
+        console.warn('[DEVICE-HOOK] This device was revoked in Sandbox mode. Logging out...');
+        if (onForceLogout) onForceLogout();
+      }
+    };
+
+    window.addEventListener('sandbox_device_revoked', handleSandboxRevoked as EventListener);
+
+    // Supabase Realtime channel listener for table user_devices
+    let channel: any = null;
+    if (!isSandboxMode) {
+      channel = supabase
+        .channel(`user_devices_revocation_${currentUserId}`)
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'user_devices',
+            filter: `user_id=eq.${currentUserId}`
+          },
+          payload => {
+            const updated = payload.new as any;
+            const deleted = payload.old as any;
+
+            // If current device was marked is_revoked = true or deleted
+            if (
+              (updated && (updated.id === currentDevice.id || updated.device_fingerprint === currentDevice.device_fingerprint) && updated.is_revoked) ||
+              (payload.eventType === 'DELETE' && deleted && (deleted.id === currentDevice.id || deleted.device_fingerprint === currentDevice.device_fingerprint))
+            ) {
+              console.warn('[DEVICE-HOOK] Current device session revoked by Primary Device! Executing instant force logout...');
+              if (onForceLogout) {
+                onForceLogout();
+              } else {
+                supabase.auth.signOut();
+                window.location.reload();
+              }
+            } else {
+              // Refresh linked devices list if another device changed
+              refreshDevices();
+            }
+          }
+        )
+        .subscribe();
+    }
+
+    return () => {
+      window.removeEventListener('sandbox_device_revoked', handleSandboxRevoked as EventListener);
+      if (channel) supabase.removeChannel(channel);
+    };
+  }, [currentUserId, currentDevice, isSandboxMode, onForceLogout, refreshDevices]);
+
+  // PRIMARY DEVICE LOGIN REQUESTS LISTENER
+  useEffect(() => {
+    if (!currentUserId || !currentDevice) return;
+
+    // Only listen if this is the Primary Device
+    const isPrimary = currentDevice.is_primary || (devices.length > 0 && devices[0]?.id === currentDevice.id);
+    if (!isPrimary) return;
+
+    // Sandbox listener
+    const handleSandboxRequestCreated = (e: CustomEvent) => {
+      const req = e.detail as DeviceLoginRequest;
+      if (req && req.user_id === currentUserId && req.status === 'pending') {
+        setPendingLoginRequest(req);
+      }
+    };
+
+    window.addEventListener('sandbox_login_request_created', handleSandboxRequestCreated as EventListener);
+
+    // Realtime Supabase listener
+    let channel: any = null;
+    if (!isSandboxMode) {
+      channel = supabase
+        .channel(`device_login_requests_${currentUserId}`)
+        .on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'device_login_requests',
+            filter: `user_id=eq.${currentUserId}`
+          },
+          payload => {
+            const req = payload.new as DeviceLoginRequest;
+            if (req && req.status === 'pending') {
+              setPendingLoginRequest(req);
+            }
+          }
+        )
+        .subscribe();
+    }
+
+    return () => {
+      window.removeEventListener('sandbox_login_request_created', handleSandboxRequestCreated as EventListener);
+      if (channel) supabase.removeChannel(channel);
+    };
+  }, [currentUserId, currentDevice, devices, isSandboxMode]);
+
+  const approveRequest = useCallback(async (requestId: string) => {
+    const success = await deviceService.updateLoginRequestStatus(requestId, 'approved', isSandboxMode, currentUserId);
+    if (success) {
+      setPendingLoginRequest(null);
+      refreshDevices();
+    }
+    return success;
+  }, [currentUserId, isSandboxMode, refreshDevices]);
+
+  const declineRequest = useCallback(async (requestId: string) => {
+    const success = await deviceService.updateLoginRequestStatus(requestId, 'declined', isSandboxMode, currentUserId);
+    if (success) {
+      setPendingLoginRequest(null);
+    }
+    return success;
+  }, [currentUserId, isSandboxMode]);
+
   const logoutDevice = useCallback(async (deviceTableId: string) => {
     if (!currentUserId) return false;
     const success = await deviceService.logoutDevice(currentUserId, deviceTableId, isSandboxMode);
@@ -84,16 +210,25 @@ export function useDeviceVerification({ currentUserId, isSandboxMode }: UseDevic
   const openModal = useCallback(() => setIsModalOpen(true), []);
   const closeModal = useCallback(() => setIsModalOpen(false), []);
 
+  const isPrimaryDevice = Boolean(
+    currentDevice?.is_primary || (devices.length > 0 && devices[0]?.id === currentDevice?.id)
+  );
+
   return {
     devices,
     currentDevice,
+    isPrimaryDevice,
     newDeviceAlert,
+    pendingLoginRequest,
     loading,
     isModalOpen,
     openModal,
     closeModal,
     refreshDevices,
     logoutDevice,
+    approveRequest,
+    declineRequest,
     dismissAlert
   };
 }
+

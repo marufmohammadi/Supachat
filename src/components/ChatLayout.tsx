@@ -3,7 +3,7 @@ import {
   Search, Send, Lock, Plus, Users, ShieldCheck, CheckCheck, Check, LogOut, 
   Database, UserCheck, Key, Shield, AlertCircle, Info, Sparkles, Archive, Image, FileText, Globe, ArrowLeft, Mic, Laptop
 } from 'lucide-react';
-import { useDeviceVerification, LinkedDevicesModal } from '../features/device-verification';
+import { useDeviceVerification, LinkedDevicesModal, LoginApprovalModal } from '../features/device-verification';
 import { supabase, testSupabaseConnection } from '../lib/supabase';
 import { encryptMessage, decryptMessage, importPublicKey } from '../lib/crypto';
 import { Profile, Group, Message } from '../types';
@@ -84,15 +84,23 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
   const {
     devices: linkedDevicesList,
     currentDevice: currentDeviceRecord,
+    isPrimaryDevice,
     newDeviceAlert,
+    pendingLoginRequest,
     loading: deviceLoading,
     isModalOpen: showLinkedDevicesModal,
     openModal: openLinkedDevicesModal,
     closeModal: closeLinkedDevicesModal,
     refreshDevices: refreshLinkedDevices,
     logoutDevice: handleLogoutDevice,
+    approveRequest,
+    declineRequest,
     dismissAlert: dismissDeviceAlert
-  } = useDeviceVerification({ currentUserId, isSandboxMode });
+  } = useDeviceVerification({ 
+    currentUserId, 
+    isSandboxMode,
+    onForceLogout: onLogout 
+  });
 
   // Call System State & Hook
   const [showCallHistory, setShowCallHistory] = useState(false);
@@ -3269,9 +3277,19 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
         onClose={closeLinkedDevicesModal}
         devices={linkedDevicesList}
         currentDevice={currentDeviceRecord}
+        isPrimaryDevice={isPrimaryDevice}
+        userId={currentUserId}
+        isSandboxMode={isSandboxMode}
         onLogoutDevice={handleLogoutDevice}
         onRefresh={refreshLinkedDevices}
         loading={deviceLoading}
+      />
+
+      {/* Login Approval Prompt Modal for Primary Device */}
+      <LoginApprovalModal
+        request={pendingLoginRequest}
+        onApprove={approveRequest}
+        onDecline={declineRequest}
       />
 
       {/* New Device Linked Alert Toast */}

@@ -1,6 +1,7 @@
-import { useState, FormEvent } from 'react';
+import { useState, FormEvent, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
-import { Key, Mail, Lock, User, ShieldAlert, Sparkles, MessageSquare, Database } from 'lucide-react';
+import { Key, Mail, Lock, User, ShieldAlert, Sparkles, MessageSquare, Database, QrCode, Clock, RefreshCw, Smartphone, Laptop } from 'lucide-react';
+import { deviceService, getDeviceFingerprintDetails } from '../features/device-verification';
 
 interface AuthLayoutProps {
   onAuthSuccess: (session: any, isSandboxMode: boolean) => void;
@@ -17,6 +18,120 @@ export default function AuthLayout({ onAuthSuccess, onOpenDbSetup, isDbOffline =
   const [errorText, setErrorText] = useState<string | null>(null);
   const [successText, setSuccessText] = useState<string | null>(null);
 
+  // QR Mode States
+  const [showQRMode, setShowQRMode] = useState(false);
+  const [qrInputToken, setQrInputToken] = useState('');
+  const [qrValidating, setQrValidating] = useState(false);
+
+  // Login Request Waiting States
+  const [pendingRequestId, setPendingRequestId] = useState<string | null>(null);
+  const [waitingForApproval, setWaitingForApproval] = useState(false);
+  const [pendingSession, setPendingSession] = useState<any | null>(null);
+  const [approvalCountdown, setApprovalCountdown] = useState(60);
+
+  // Countdown timer for approval waiting
+  useEffect(() => {
+    if (!waitingForApproval || approvalCountdown <= 0) return;
+    const interval = setInterval(() => {
+      setApprovalCountdown(prev => {
+        if (prev <= 1) {
+          clearInterval(interval);
+          setWaitingForApproval(false);
+          setErrorText('Login request timed out. Please try again or approve on primary device.');
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [waitingForApproval, approvalCountdown]);
+
+  // Realtime subscription / event listener for login approval
+  useEffect(() => {
+    if (!pendingRequestId) return;
+
+    const handleSandboxUpdate = (e: CustomEvent) => {
+      const req = e.detail;
+      if (req && req.id === pendingRequestId) {
+        if (req.status === 'approved') {
+          setWaitingForApproval(false);
+          setPendingRequestId(null);
+          if (pendingSession) onAuthSuccess(pendingSession, true);
+        } else if (req.status === 'declined') {
+          setWaitingForApproval(false);
+          setPendingRequestId(null);
+          setErrorText('Login request was declined by your Primary Device.');
+        }
+      }
+    };
+
+    window.addEventListener('sandbox_login_request_updated', handleSandboxUpdate as EventListener);
+
+    let channel: any = null;
+    channel = supabase
+      .channel(`device_login_req_${pendingRequestId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'device_login_requests',
+          filter: `id=eq.${pendingRequestId}`
+        },
+        payload => {
+          const req = payload.new as any;
+          if (req) {
+            if (req.status === 'approved') {
+              setWaitingForApproval(false);
+              setPendingRequestId(null);
+              if (pendingSession) onAuthSuccess(pendingSession, false);
+            } else if (req.status === 'declined') {
+              setWaitingForApproval(false);
+              setPendingRequestId(null);
+              setErrorText('Login request was declined by your Primary Device.');
+            }
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      window.removeEventListener('sandbox_login_request_updated', handleSandboxUpdate as EventListener);
+      if (channel) supabase.removeChannel(channel);
+    };
+  }, [pendingRequestId, pendingSession, onAuthSuccess]);
+
+  const handleQRSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!qrInputToken.trim()) return;
+    setQrValidating(true);
+    setErrorText(null);
+
+    try {
+      const res = await deviceService.validateAndConsumeQRSession(qrInputToken, false);
+      if (res.valid) {
+        // Successful QR scan login
+        const mockQRSession = {
+          user: {
+            id: res.userId || 'qr-linked-user',
+            email: 'linked-device@whatsapp.example',
+            user_metadata: {
+              username: 'Linked Device User',
+              avatar_url: `https://api.dicebear.com/7.x/adventurer/svg?seed=${res.userId}`
+            }
+          }
+        };
+        onAuthSuccess(mockQRSession, false);
+      } else {
+        setErrorText('Invalid or expired QR Session code. Please generate a new code on your Primary Device.');
+      }
+    } catch {
+      setErrorText('Failed to validate QR session code.');
+    } finally {
+      setQrValidating(false);
+    }
+  };
+
   const handleAuth = async (e: FormEvent) => {
     e.preventDefault();
     setLoading(true);
@@ -28,7 +143,6 @@ export default function AuthLayout({ onAuthSuccess, onOpenDbSetup, isDbOffline =
         if (!username) {
           throw new Error('Please choose a username.');
         }
-        // Sign up with Supabase, saving username in user metadata so the trigger can pick it up
         const { data, error } = await supabase.auth.signUp({
           email,
           password,
@@ -56,7 +170,6 @@ export default function AuthLayout({ onAuthSuccess, onOpenDbSetup, isDbOffline =
         });
 
         if (error) {
-          // If the error is 'Invalid login credentials', try to automatically register this user
           if (error.message && (error.message.toLowerCase().includes('invalid login credentials') || error.message.toLowerCase().includes('user not found'))) {
             console.log('User not found or invalid credentials on signin. Attempting silent auto-registration for sandbox/demo flow...');
             const autoUsername = email.split('@')[0];
@@ -72,14 +185,13 @@ export default function AuthLayout({ onAuthSuccess, onOpenDbSetup, isDbOffline =
             });
 
             if (signUpError) {
-              throw error; // throw original signin error if sign up also fails
+              throw error;
             }
 
             if (signUpData.session) {
               onAuthSuccess(signUpData.session, false);
               return;
             } else if (signUpData.user) {
-              // Sign-in again to see if we can get a session directly
               const { data: reSignInData, error: reSignInError } = await supabase.auth.signInWithPassword({
                 email,
                 password,
@@ -88,8 +200,7 @@ export default function AuthLayout({ onAuthSuccess, onOpenDbSetup, isDbOffline =
                 onAuthSuccess(reSignInData.session, false);
                 return;
               } else {
-                // If email confirmation is required and we can't login directly, log them in via sandbox mode
-                setSuccessText('Auto-registered successfully! Email verification might be required. Logging you in via interactive sandbox mode for a seamless experience.');
+                setSuccessText('Auto-registered successfully! Logging you in via interactive sandbox mode...');
                 setTimeout(() => {
                   const mockSession = {
                     user: {
@@ -111,7 +222,23 @@ export default function AuthLayout({ onAuthSuccess, onOpenDbSetup, isDbOffline =
         }
 
         if (data.session) {
-          onAuthSuccess(data.session, false);
+          const userId = data.session.user.id;
+          // Check Primary Device status
+          const primaryDevice = await deviceService.getPrimaryDevice(userId, false);
+          const currentFpPayload = getDeviceFingerprintDetails(userId);
+
+          if (primaryDevice && primaryDevice.device_fingerprint !== currentFpPayload.device_fingerprint) {
+            // Secondary device login attempt! Requires Primary Device approval
+            console.log('[DEVICE-VERIFICATION] Secondary device detected. Requesting Primary Device approval...');
+            const req = await deviceService.createLoginRequest(userId, currentFpPayload, false);
+            setPendingRequestId(req.id);
+            setPendingSession(data.session);
+            setWaitingForApproval(true);
+            setApprovalCountdown(60);
+          } else {
+            // First/Primary Device login!
+            onAuthSuccess(data.session, false);
+          }
         }
       }
     } catch (err: any) {
@@ -228,80 +355,168 @@ export default function AuthLayout({ onAuthSuccess, onOpenDbSetup, isDbOffline =
           </div>
         )}
 
-        {/* Real authentication form */}
-        <form onSubmit={handleAuth} className="space-y-4">
-          {isSignUp && (
-            <div className="space-y-1">
-              <label className="text-xs font-semibold text-gray-400">Choose Username</label>
+        {/* QR Mode Toggle or Form */}
+        {showQRMode ? (
+          <form onSubmit={handleQRSubmit} className="space-y-4">
+            <div className="p-3.5 bg-[#111b21] border border-emerald-500/30 rounded-xl space-y-2 text-left">
+              <div className="flex items-center gap-2 text-emerald-400 font-bold text-xs">
+                <QrCode className="w-4 h-4" /> Link Secondary Device with QR
+              </div>
+              <p className="text-[11px] text-gray-300 leading-relaxed">
+                Enter the QR session token displayed on your Primary Device (under Linked Devices &gt; Link Device) to authenticate immediately.
+              </p>
+            </div>
+
+            <div className="space-y-1 text-left">
+              <label className="text-xs font-semibold text-gray-400">QR Session Token</label>
+              <input
+                type="text"
+                required
+                placeholder="e.g. WA-QR-172160..."
+                value={qrInputToken}
+                onChange={(e) => setQrInputToken(e.target.value)}
+                className="w-full px-4 py-2.5 bg-[#2a3942] border border-gray-700 rounded-xl text-sm focus:outline-none focus:border-[#00a884] text-white font-mono placeholder-gray-500 transition-colors"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={qrValidating}
+              className="w-full py-3 bg-[#00a884] hover:bg-[#008f72] active:scale-[0.98] text-slate-950 font-bold rounded-xl text-sm transition-all shadow-lg cursor-pointer flex justify-center items-center gap-2"
+            >
+              {qrValidating ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin" /> Authenticating Token...
+                </>
+              ) : (
+                'Link & Launch Device'
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowQRMode(false)}
+              className="w-full py-2 text-xs text-gray-400 hover:text-white transition-colors"
+            >
+              ← Back to standard email login
+            </button>
+          </form>
+        ) : waitingForApproval ? (
+          <div className="p-6 bg-[#111b21] border border-emerald-500/40 rounded-2xl space-y-4 text-center animate-fade-in">
+            <div className="p-3 bg-emerald-500/15 rounded-full text-emerald-400 w-12 h-12 mx-auto flex items-center justify-center">
+              <RefreshCw className="w-6 h-6 animate-spin" />
+            </div>
+            <div>
+              <h3 className="font-bold text-white text-base">Waiting for Primary Device Approval</h3>
+              <p className="text-xs text-gray-300 mt-1">
+                An approval request has been sent to your Primary Device. Please tap <strong className="text-emerald-400">Approve Device</strong> on your phone or primary browser.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-center gap-2 text-xs text-amber-400 bg-amber-500/10 py-1.5 px-3 rounded-full border border-amber-500/20 w-fit mx-auto font-mono font-bold">
+              <Clock className="w-3.5 h-3.5 animate-pulse" />
+              <span>{approvalCountdown}s remaining</span>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                setWaitingForApproval(false);
+                setPendingRequestId(null);
+              }}
+              className="mt-2 px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-xl text-xs font-semibold cursor-pointer transition-colors"
+            >
+              Cancel Login
+            </button>
+          </div>
+        ) : (
+          /* Real authentication form */
+          <form onSubmit={handleAuth} className="space-y-4">
+            {isSignUp && (
+              <div className="space-y-1 text-left">
+                <label className="text-xs font-semibold text-gray-400">Choose Username</label>
+                <div className="relative">
+                  <User className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. alex_crypto"
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    className="w-full pl-11 pr-4 py-2.5 bg-[#2a3942] border border-gray-700 rounded-xl text-sm focus:outline-none focus:border-[#00a884] text-white placeholder-gray-500 transition-colors"
+                  />
+                </div>
+              </div>
+            )}
+
+            <div className="space-y-1 text-left">
+              <label className="text-xs font-semibold text-gray-400">Email Address</label>
               <div className="relative">
-                <User className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+                <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
                 <input
-                  type="text"
+                  type="email"
                   required
-                  placeholder="e.g. alex_crypto"
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
+                  placeholder="you@example.com"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
                   className="w-full pl-11 pr-4 py-2.5 bg-[#2a3942] border border-gray-700 rounded-xl text-sm focus:outline-none focus:border-[#00a884] text-white placeholder-gray-500 transition-colors"
                 />
               </div>
             </div>
-          )}
 
-          <div className="space-y-1">
-            <label className="text-xs font-semibold text-gray-400">Email Address</label>
-            <div className="relative">
-              <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
-              <input
-                type="email"
-                required
-                placeholder="you@example.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="w-full pl-11 pr-4 py-2.5 bg-[#2a3942] border border-gray-700 rounded-xl text-sm focus:outline-none focus:border-[#00a884] text-white placeholder-gray-500 transition-colors"
-              />
+            <div className="space-y-1 text-left">
+              <label className="text-xs font-semibold text-gray-400">Account Password</label>
+              <div className="relative">
+                <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+                <input
+                  type="password"
+                  required
+                  placeholder="••••••••"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full pl-11 pr-4 py-2.5 bg-[#2a3942] border border-gray-700 rounded-xl text-sm focus:outline-none focus:border-[#00a884] text-white placeholder-gray-500 transition-colors"
+                />
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full py-3 bg-[#00a884] hover:bg-[#008f72] active:scale-[0.98] text-slate-950 font-bold rounded-xl text-sm transition-all shadow-lg hover:shadow-emerald-950/25 cursor-pointer flex justify-center items-center"
+            >
+              {loading ? (
+                <div className="w-5 h-5 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
+              ) : isSignUp ? (
+                'Create Encrypted Account'
+              ) : (
+                'Login Securely'
+              )}
+            </button>
+          </form>
+        )}
+
+        {/* Link Device with QR code option */}
+        {!showQRMode && !waitingForApproval && (
+          <div className="text-center space-y-2 pt-1 border-t border-gray-700/50">
+            <button
+              id="link-qr-code-mode-btn"
+              type="button"
+              onClick={() => setShowQRMode(true)}
+              className="text-xs font-semibold text-emerald-400 hover:text-emerald-300 flex items-center justify-center gap-1.5 mx-auto py-1 cursor-pointer"
+            >
+              <QrCode className="w-4 h-4" /> Link Device using QR Code Token
+            </button>
+            <div>
+              <button
+                id="toggle-signup-mode-btn"
+                onClick={() => setIsSignUp(!isSignUp)}
+                className="text-xs text-[#00a884] hover:underline"
+              >
+                {isSignUp ? 'Already using WhatsApp? Log in instead' : "Don't have an account yet? Register account"}
+              </button>
             </div>
           </div>
-
-          <div className="space-y-1">
-            <label className="text-xs font-semibold text-gray-400">Account Password</label>
-            <div className="relative">
-              <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
-              <input
-                type="password"
-                required
-                placeholder="••••••••"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full pl-11 pr-4 py-2.5 bg-[#2a3942] border border-gray-700 rounded-xl text-sm focus:outline-none focus:border-[#00a884] text-white placeholder-gray-500 transition-colors"
-              />
-            </div>
-          </div>
-
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full py-3 bg-[#00a884] hover:bg-[#008f72] active:scale-[0.98] text-slate-950 font-bold rounded-xl text-sm transition-all shadow-lg hover:shadow-emerald-950/25 cursor-pointer flex justify-center items-center"
-          >
-            {loading ? (
-              <div className="w-5 h-5 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
-            ) : isSignUp ? (
-              'Create Encrypted Account'
-            ) : (
-              'Login Securly'
-            )}
-          </button>
-        </form>
-
-        {/* Toggle Mode */}
-        <div className="text-center">
-          <button
-            id="toggle-signup-mode-btn"
-            onClick={() => setIsSignUp(!isSignUp)}
-            className="text-xs text-[#00a884] hover:underline"
-          >
-            {isSignUp ? 'Already using WhatsApp? Log in instead' : "Don't have an account yet? Register account"}
-          </button>
-        </div>
+        )}
 
         {/* Separator / Sandbox Mode Option */}
         <div className="relative flex py-2 items-center">

@@ -1,7 +1,9 @@
 import { supabase } from '../../../lib/supabase';
-import { RegisterDevicePayload, UserDevice } from '../types';
+import { RegisterDevicePayload, UserDevice, DeviceLoginRequest, QRLinkSession } from '../types';
 
 const SANDBOX_DEVICES_KEY = 'whatsapp_sandbox_user_devices';
+const SANDBOX_REQUESTS_KEY = 'whatsapp_sandbox_login_requests';
+const SANDBOX_QR_KEY = 'whatsapp_sandbox_qr_sessions';
 
 function getSandboxDevices(userId: string): UserDevice[] {
   try {
@@ -21,11 +23,56 @@ function saveSandboxDevices(userId: string, devices: UserDevice[]) {
   }
 }
 
+function getSandboxRequests(userId: string): DeviceLoginRequest[] {
+  try {
+    const raw = localStorage.getItem(`${SANDBOX_REQUESTS_KEY}_${userId}`);
+    if (raw) return JSON.parse(raw);
+  } catch {
+    // ignore
+  }
+  return [];
+}
+
+function saveSandboxRequests(userId: string, reqs: DeviceLoginRequest[]) {
+  try {
+    localStorage.setItem(`${SANDBOX_REQUESTS_KEY}_${userId}`, JSON.stringify(reqs));
+  } catch {
+    // ignore
+  }
+}
+
 export const deviceService = {
+  async getPrimaryDevice(userId: string, isSandboxMode: boolean): Promise<UserDevice | null> {
+    if (isSandboxMode) {
+      const devices = getSandboxDevices(userId).filter(d => !d.is_revoked);
+      return devices.find(d => d.is_primary) || devices[0] || null;
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from('user_devices')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('is_revoked', false)
+        .order('created_at', { ascending: true });
+
+      if (error || !data || data.length === 0) {
+        return null;
+      }
+
+      // Find explicitly marked primary or the first created device
+      const primary = data.find(d => d.is_primary) || data[0];
+      return primary as UserDevice;
+    } catch {
+      return null;
+    }
+  },
+
   async registerDevice(
     userId: string,
     payload: RegisterDevicePayload,
-    isSandboxMode: boolean
+    isSandboxMode: boolean,
+    forceLinkedDevice: boolean = false
   ): Promise<{ device: UserDevice; isNewDevice: boolean }> {
     const nowIso = new Date().toISOString();
 
@@ -34,6 +81,9 @@ export const deviceService = {
       const existingIndex = existingDevices.findIndex(
         d => d.device_fingerprint === payload.device_fingerprint
       );
+
+      const hasPrimary = existingDevices.some(d => d.is_primary && !d.is_revoked);
+      const isPrimary = !forceLinkedDevice && !hasPrimary;
 
       if (existingIndex >= 0) {
         const existing = existingDevices[existingIndex];
@@ -44,6 +94,8 @@ export const deviceService = {
           login_time: nowIso,
           login_count: (existing.login_count || 1) + 1,
           public_key_fingerprint: payload.public_key_fingerprint,
+          is_revoked: false,
+          is_primary: existing.is_primary ?? isPrimary,
           updated_at: nowIso
         };
         existingDevices[existingIndex] = updated;
@@ -67,6 +119,8 @@ export const deviceService = {
           login_time: nowIso,
           last_active: nowIso,
           login_count: 1,
+          is_primary: isPrimary,
+          is_revoked: false,
           created_at: nowIso,
           updated_at: nowIso
         };
@@ -77,7 +131,17 @@ export const deviceService = {
     }
 
     try {
-      // 1. Check if user device exists with this fingerprint
+      // 1. Check existing devices count to determine if primary
+      const { data: allUserDevices } = await supabase
+        .from('user_devices')
+        .select('id, is_primary, is_revoked')
+        .eq('user_id', userId)
+        .eq('is_revoked', false);
+
+      const hasPrimary = (allUserDevices || []).some(d => d.is_primary);
+      const isPrimary = !forceLinkedDevice && !hasPrimary;
+
+      // 2. Check if user device exists with this fingerprint
       const { data: existing, error: fetchError } = await supabase
         .from('user_devices')
         .select('*')
@@ -99,6 +163,7 @@ export const deviceService = {
             login_time: nowIso,
             login_count: (existing.login_count || 1) + 1,
             public_key_fingerprint: payload.public_key_fingerprint,
+            is_revoked: false,
             updated_at: nowIso
           })
           .eq('id', existing.id)
@@ -112,6 +177,7 @@ export const deviceService = {
               ...existing,
               last_active: nowIso,
               login_time: nowIso,
+              is_revoked: false,
               login_count: (existing.login_count || 1) + 1,
               updated_at: nowIso
             },
@@ -137,7 +203,9 @@ export const deviceService = {
           public_key_fingerprint: payload.public_key_fingerprint,
           login_time: nowIso,
           last_active: nowIso,
-          login_count: 1
+          login_count: 1,
+          is_primary: isPrimary,
+          is_revoked: false
         };
 
         const { data: inserted, error: insertError } = await supabase
@@ -148,7 +216,6 @@ export const deviceService = {
 
         if (insertError || !inserted) {
           console.warn('[DEVICE-VERIFICATION] Insert error or schema missing:', insertError?.message);
-          // Fallback return
           const localDevice: UserDevice = {
             id: 'dev-fallback-' + Math.random().toString(36).substring(2, 9),
             ...newRecord,
@@ -162,7 +229,6 @@ export const deviceService = {
       }
     } catch (err) {
       console.warn('[DEVICE-VERIFICATION] Safe registration catch:', err);
-      // Ensure registration never crashes login
       const fallback: UserDevice = {
         id: 'dev-local-' + Math.random().toString(36).substring(2, 9),
         user_id: userId,
@@ -180,6 +246,8 @@ export const deviceService = {
         login_time: nowIso,
         last_active: nowIso,
         login_count: 1,
+        is_primary: false,
+        is_revoked: false,
         created_at: nowIso,
         updated_at: nowIso
       };
@@ -189,7 +257,7 @@ export const deviceService = {
 
   async getLinkedDevices(userId: string, isSandboxMode: boolean): Promise<UserDevice[]> {
     if (isSandboxMode) {
-      return getSandboxDevices(userId);
+      return getSandboxDevices(userId).filter(d => !d.is_revoked);
     }
 
     try {
@@ -197,6 +265,7 @@ export const deviceService = {
         .from('user_devices')
         .select('*')
         .eq('user_id', userId)
+        .eq('is_revoked', false)
         .order('last_active', { ascending: false });
 
       if (error) {
@@ -213,26 +282,219 @@ export const deviceService = {
 
   async logoutDevice(userId: string, deviceTableId: string, isSandboxMode: boolean): Promise<boolean> {
     if (isSandboxMode) {
-      const list = getSandboxDevices(userId).filter(d => d.id !== deviceTableId);
+      const list = getSandboxDevices(userId).map(d => 
+        d.id === deviceTableId ? { ...d, is_revoked: true } : d
+      );
       saveSandboxDevices(userId, list);
+
+      // Dispatch window event for instant local sandbox update
+      window.dispatchEvent(new CustomEvent('sandbox_device_revoked', { detail: { deviceId: deviceTableId } }));
       return true;
     }
 
     try {
-      const { error } = await supabase
+      // Mark as revoked AND delete so realtime triggers change event
+      const { error: updateError } = await supabase
         .from('user_devices')
-        .delete()
+        .update({ is_revoked: true, updated_at: new Date().toISOString() })
         .eq('id', deviceTableId)
         .eq('user_id', userId);
 
-      if (error) {
-        console.error('[DEVICE-VERIFICATION] Logout device error:', error.message);
-        return false;
+      if (updateError) {
+        console.error('[DEVICE-VERIFICATION] Revoke device error:', updateError.message);
+        // Fallback to delete
+        await supabase
+          .from('user_devices')
+          .delete()
+          .eq('id', deviceTableId)
+          .eq('user_id', userId);
       }
+
       return true;
     } catch (err) {
       console.error('[DEVICE-VERIFICATION] Logout device catch:', err);
       return false;
     }
+  },
+
+  // LOGIN APPROVAL REQUEST SERVICES
+  async createLoginRequest(
+    userId: string,
+    payload: RegisterDevicePayload,
+    isSandboxMode: boolean,
+    qrToken?: string
+  ): Promise<DeviceLoginRequest> {
+    const now = new Date();
+    const expires = new Date(now.getTime() + 60 * 1000).toISOString(); // 60s timeout
+
+    const reqData: Partial<DeviceLoginRequest> = {
+      user_id: userId,
+      requester_device_id: payload.device_id,
+      requester_device_name: payload.device_name,
+      requester_browser: payload.browser,
+      requester_os: payload.operating_system,
+      requester_fingerprint: payload.device_fingerprint,
+      qr_session_token: qrToken || null,
+      status: 'pending',
+      created_at: now.toISOString(),
+      expires_at: expires
+    };
+
+    if (isSandboxMode) {
+      const reqs = getSandboxRequests(userId);
+      const newReq: DeviceLoginRequest = {
+        id: 'req-sand-' + Math.random().toString(36).substring(2, 9),
+        ...(reqData as DeviceLoginRequest)
+      };
+      reqs.push(newReq);
+      saveSandboxRequests(userId, reqs);
+      window.dispatchEvent(new CustomEvent('sandbox_login_request_created', { detail: newReq }));
+      return newReq;
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from('device_login_requests')
+        .insert(reqData)
+        .select()
+        .single();
+
+      if (error || !data) {
+        console.warn('[DEVICE-VERIFICATION] Fallback creating login request locally:', error?.message);
+        return {
+          id: 'req-local-' + Math.random().toString(36).substring(2, 9),
+          ...(reqData as DeviceLoginRequest)
+        };
+      }
+
+      return data as DeviceLoginRequest;
+    } catch {
+      return {
+        id: 'req-local-' + Math.random().toString(36).substring(2, 9),
+        ...(reqData as DeviceLoginRequest)
+      };
+    }
+  },
+
+  async updateLoginRequestStatus(
+    requestId: string,
+    status: 'approved' | 'declined' | 'expired',
+    isSandboxMode: boolean,
+    userId?: string
+  ): Promise<boolean> {
+    if (isSandboxMode && userId) {
+      const reqs = getSandboxRequests(userId);
+      const idx = reqs.findIndex(r => r.id === requestId);
+      if (idx >= 0) {
+        reqs[idx].status = status;
+        saveSandboxRequests(userId, reqs);
+        window.dispatchEvent(new CustomEvent('sandbox_login_request_updated', { detail: reqs[idx] }));
+        return true;
+      }
+      return false;
+    }
+
+    try {
+      const { error } = await supabase
+        .from('device_login_requests')
+        .update({ status })
+        .eq('id', requestId);
+
+      return !error;
+    } catch {
+      return false;
+    }
+  },
+
+  // QR LINK SESSION SERVICES
+  async createQRSession(userId: string, isSandboxMode: boolean): Promise<QRLinkSession> {
+    const now = new Date();
+    const expires = new Date(now.getTime() + 60 * 1000).toISOString();
+    const token = `WA-QR-${Date.now()}-${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
+
+    if (isSandboxMode) {
+      const session: QRLinkSession = {
+        id: 'qr-sand-' + Math.random().toString(36).substring(2, 9),
+        user_id: userId,
+        token,
+        status: 'active',
+        created_at: now.toISOString(),
+        expires_at: expires
+      };
+      localStorage.setItem(`${SANDBOX_QR_KEY}_${userId}`, JSON.stringify(session));
+      return session;
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from('qr_link_sessions')
+        .insert({
+          user_id: userId,
+          token,
+          status: 'active',
+          expires_at: expires
+        })
+        .select()
+        .single();
+
+      if (error || !data) {
+        return {
+          id: 'qr-local-' + Math.random().toString(36).substring(2, 9),
+          user_id: userId,
+          token,
+          status: 'active',
+          created_at: now.toISOString(),
+          expires_at: expires
+        };
+      }
+
+      return data as QRLinkSession;
+    } catch {
+      return {
+        id: 'qr-local-' + Math.random().toString(36).substring(2, 9),
+        user_id: userId,
+        token,
+        status: 'active',
+        created_at: now.toISOString(),
+        expires_at: expires
+      };
+    }
+  },
+
+  async validateAndConsumeQRSession(token: string, isSandboxMode: boolean): Promise<{ valid: boolean; userId?: string }> {
+    if (!token || !token.trim()) return { valid: false };
+
+    if (isSandboxMode) {
+      if (token.startsWith('WA-QR-')) {
+        return { valid: true, userId: 'mock-user-alice-1234' };
+      }
+      return { valid: false };
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from('qr_link_sessions')
+        .select('*')
+        .eq('token', token.trim())
+        .eq('status', 'active')
+        .gt('expires_at', new Date().toISOString())
+        .maybeSingle();
+
+      if (error || !data) {
+        return { valid: false };
+      }
+
+      // Consume the session so it cannot be reused
+      await supabase
+        .from('qr_link_sessions')
+        .update({ status: 'consumed' })
+        .eq('id', data.id);
+
+      return { valid: true, userId: data.user_id };
+    } catch {
+      return { valid: false };
+    }
   }
 };
+
+

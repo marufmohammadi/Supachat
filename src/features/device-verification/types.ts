@@ -15,6 +15,8 @@ export interface UserDevice {
   login_time: string;
   last_active: string;
   login_count: number;
+  is_primary?: boolean;
+  is_revoked?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -41,3 +43,27 @@ export interface NewDeviceAlert {
   login_time: string;
   timestamp: number;
 }
+
+export interface DeviceLoginRequest {
+  id: string;
+  user_id: string;
+  requester_device_id: string;
+  requester_device_name: string;
+  requester_browser: string;
+  requester_os: string;
+  requester_fingerprint: string;
+  qr_session_token?: string;
+  status: 'pending' | 'approved' | 'declined' | 'expired';
+  created_at: string;
+  expires_at: string;
+}
+
+export interface QRLinkSession {
+  id: string;
+  user_id: string;
+  token: string;
+  status: 'active' | 'used' | 'expired';
+  created_at: string;
+  expires_at: string;
+}
+
