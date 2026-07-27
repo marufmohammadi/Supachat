@@ -24,6 +24,8 @@ export interface GroupMember {
   profile?: Profile;
 }
 
+export type MessageMode = 'normal' | 'view_once' | 'auto_delete';
+
 export interface Message {
   id: string;
   sender_id: string;
@@ -36,9 +38,15 @@ export interface Message {
   created_at: string;
   sender?: Profile;
   receiver?: Profile;
-  status?: 'sent' | 'delivered' | 'read' | null;
+  status?: 'sent' | 'delivered' | 'read' | 'expired' | null;
   delivered_at?: string | null;
   read_at?: string | null;
+  message_mode?: MessageMode;
+  view_once?: boolean;
+  expires_at?: string | null;
+  opened_at?: string | null;
+  opened_by?: string[] | null;
+  destroyed_at?: string | null;
 }
 
 export interface LocalKeyPair {

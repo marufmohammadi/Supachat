@@ -1,13 +1,16 @@
 import { useState, useEffect, useRef, FormEvent } from 'react';
 import { 
   Search, Send, Lock, Plus, Users, ShieldCheck, CheckCheck, Check, LogOut, 
-  Database, UserCheck, Key, Shield, AlertCircle, Info, Sparkles, Archive, Image, FileText, Globe, ArrowLeft, Mic, Laptop
+  Database, UserCheck, Key, Shield, AlertCircle, Info, Sparkles, Archive, Image, FileText, Globe, ArrowLeft, Mic, Laptop, Eye, Clock, Timer
 } from 'lucide-react';
 import { useDeviceVerification, LinkedDevicesModal, LoginApprovalModal } from '../features/device-verification';
 import { supabase, testSupabaseConnection } from '../lib/supabase';
 import { encryptMessage, decryptMessage, importPublicKey } from '../lib/crypto';
-import { Profile, Group, Message } from '../types';
+import { Profile, Group, Message, MessageMode } from '../types';
 import E2EEKeyManager from './E2EEKeyManager';
+import { DisappearingOptionsModal, DisappearingSettings } from './disappearing/DisappearingOptionsModal';
+import { ViewOnceViewerModal } from './disappearing/ViewOnceViewerModal';
+import { CountdownTimer } from './disappearing/CountdownTimer';
 
 // WebRTC Calling System Imports
 import { PhoneCall, Phone, PhoneMissed, Video } from 'lucide-react';
@@ -358,6 +361,15 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
   const [dbStatus, setDbStatus] = useState<'connected' | 'checking' | 'error'>('checking');
   const [dbErrorString, setDbErrorString] = useState<string | null>(null);
   const [e2eeExplainer, setE2eeExplainer] = useState<Message | null>(null);
+
+  // WhatsApp Disappearing & View Once Messages States
+  const [disappearingSettings, setDisappearingSettings] = useState<DisappearingSettings>({
+    mode: 'normal',
+    durationSeconds: null,
+  });
+  const [showDisappearingModal, setShowDisappearingModal] = useState<boolean>(false);
+  const [viewOnceActiveMsg, setViewOnceActiveMsg] = useState<Message | null>(null);
+  const [viewOnceDecryptedText, setViewOnceDecryptedText] = useState<string>('');
 
   // Realtime "User is typing..." States and Tracking
   const [typingUsers, setTypingUsers] = useState<{ [userId: string]: { username: string; lastActive: number } }>({});
@@ -905,6 +917,9 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
 
   // Decrypts preview text for popups silently
   const decryptPreviewText = async (msg: Message) => {
+    if (msg.view_once || msg.message_mode === 'view_once') {
+      return '🔒 View Once Message';
+    }
     if (!msg.is_encrypted) {
       return formatCallEventPreview(msg.encrypted_body, currentUserId);
     }
@@ -1347,7 +1362,13 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
                       id: updatedMsg.id, // Adopts actual UUID
                       status: updatedMsg.status || m.status,
                       delivered_at: updatedMsg.delivered_at || m.delivered_at,
-                      read_at: updatedMsg.read_at || m.read_at
+                      read_at: updatedMsg.read_at || m.read_at,
+                      opened_at: updatedMsg.opened_at || m.opened_at,
+                      opened_by: updatedMsg.opened_by || m.opened_by,
+                      destroyed_at: updatedMsg.destroyed_at || m.destroyed_at,
+                      expires_at: updatedMsg.expires_at || m.expires_at,
+                      view_once: updatedMsg.view_once !== undefined ? updatedMsg.view_once : m.view_once,
+                      message_mode: updatedMsg.message_mode || m.message_mode,
                     };
                   }
                   return m;
@@ -1584,6 +1605,22 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
     }
     isTypingBroadcastingRef.current = false;
 
+    // Disappearing & View Once parameters
+    const isViewOnce = disappearingSettings.mode === 'view_once';
+    const isAutoDelete = disappearingSettings.mode === 'auto_delete' && !!disappearingSettings.durationSeconds;
+
+    let messageMode: MessageMode = 'normal';
+    let expiresAt: string | null = null;
+    let viewOnceFlag = false;
+
+    if (isViewOnce) {
+      messageMode = 'view_once';
+      viewOnceFlag = true;
+    } else if (isAutoDelete) {
+      messageMode = 'auto_delete';
+      expiresAt = new Date(Date.now() + (disappearingSettings.durationSeconds || 300) * 1000).toISOString();
+    }
+
     if (isSandboxMode) {
       // SIMULATOR MODE
       const newMsg: Message = {
@@ -1595,6 +1632,10 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
         is_encrypted: true,
         created_at: new Date().toISOString(),
         status: 'sent',
+        message_mode: messageMode,
+        view_once: viewOnceFlag,
+        expires_at: expiresAt,
+        opened_by: [],
         sender: {
           id: currentUserId,
           username: currentUsername,
@@ -1610,14 +1651,19 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
       setMessages(prev => [...prev, newMsg]);
 
       // Update lastMessages instantly for ordering and preview
+      const previewText = isViewOnce ? '🔒 View Once Message' : originalText;
       setLastMessages(prev => ({
         ...prev,
         [activeChat.id]: {
-          text: originalText,
+          text: previewText,
           created_at: newMsg.created_at,
           is_encrypted: true
         }
       }));
+
+      if (isViewOnce) {
+        setDisappearingSettings({ mode: 'normal', durationSeconds: null });
+      }
 
       // Simulate live tick state transitions matching WhatsApp:
       // 1. Sent (instant)
@@ -1739,6 +1785,10 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
           is_encrypted: isEncrypted,
           created_at: new Date().toISOString(),
           status: 'sent',
+          message_mode: messageMode,
+          view_once: viewOnceFlag,
+          expires_at: expiresAt,
+          opened_by: [],
         };
 
         // Instantly cache the decrypted text under the optimistic ID and ciphertext body!
@@ -1749,14 +1799,19 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
         setMessages(prev => [...prev, optimisticMsg]);
 
         // Update lastMessages instantly for instant top-sorting and preview update
+        const previewText = isViewOnce ? '🔒 View Once Message' : originalText;
         setLastMessages(prev => ({
           ...prev,
           [activeChat.id]: {
-            text: originalText,
+            text: previewText,
             created_at: optimisticMsg.created_at,
             is_encrypted: isEncrypted
           }
         }));
+
+        if (isViewOnce) {
+          setDisappearingSettings({ mode: 'normal', durationSeconds: null });
+        }
 
         // Dispatch write to database in the background
         console.log('[DEBUG] Dispatching message insert to database...', {
@@ -1764,7 +1819,10 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
           recipient: activeChat.type === 'direct' ? activeChat.id : null,
           group_recipient: activeChat.type === 'group' ? activeChat.id : null,
           initial_fired_status: 'sent',
-          is_encrypted: isEncrypted
+          is_encrypted: isEncrypted,
+          message_mode: messageMode,
+          view_once: viewOnceFlag,
+          expires_at: expiresAt
         });
 
         supabase.from('messages').insert({
@@ -1775,7 +1833,11 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
           sender_encrypted_key: senderEncryptedKey,
           receiver_encrypted_key: receiverEncryptedKey,
           is_encrypted: isEncrypted,
-          status: 'sent'
+          status: 'sent',
+          message_mode: messageMode,
+          view_once: viewOnceFlag,
+          expires_at: expiresAt,
+          opened_by: []
         }).then(({ error }) => {
           if (error) {
             console.error('Failed to save message asynchronously:', error);
@@ -1792,31 +1854,101 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
     }
   };
 
+  // Handlers for View Once & Auto Delete messages
+  const handleDestroyViewOnce = async (msg: Message) => {
+    const now = new Date().toISOString();
+
+    setMessages(prev => prev.filter(m => m.id !== msg.id));
+    setViewOnceActiveMsg(null);
+    setViewOnceDecryptedText('');
+
+    if (isSandboxMode) return;
+
+    try {
+      const existingOpenedBy = Array.isArray(msg.opened_by) ? msg.opened_by : [];
+      const updatedOpenedBy = Array.from(new Set([...existingOpenedBy, currentUserId]));
+
+      await supabase
+        .from('messages')
+        .update({
+          opened_at: now,
+          opened_by: updatedOpenedBy,
+          destroyed_at: now,
+          status: 'read'
+        })
+        .eq('id', msg.id);
+    } catch (err) {
+      console.warn('Could not update destroyed view once state in db:', err);
+    }
+  };
+
+  const handleMessageExpired = async (msgId: string) => {
+    const now = new Date().toISOString();
+
+    setMessages(prev => prev.filter(m => m.id !== msgId));
+
+    if (isSandboxMode) return;
+
+    try {
+      await supabase
+        .from('messages')
+        .update({
+          status: 'expired',
+          destroyed_at: now
+        })
+        .eq('id', msgId);
+    } catch (err) {
+      console.warn('Could not mark message as expired in db:', err);
+    }
+  };
+
+  // Filter messages for rendering (exclude destroyed, expired, and opened view once messages)
+  const visibleMessages = messages.filter(msg => {
+    if (msg.destroyed_at) return false;
+    if (msg.expires_at && new Date(msg.expires_at).getTime() <= Date.now()) return false;
+
+    const isViewOnce = msg.view_once || msg.message_mode === 'view_once';
+    const openedByList = Array.isArray(msg.opened_by) ? msg.opened_by : [];
+
+    if (isViewOnce) {
+      if (openedByList.includes(currentUserId)) return false;
+      if (msg.sender_id !== currentUserId && msg.opened_at) return false;
+    }
+
+    return true;
+  });
+
   // Decrypts individual message client-side
-  const getRenderableMessageContent = (msg: Message) => {
+  const getRenderableMessageContent = async (msg: Message): Promise<string> => {
     if (!msg.is_encrypted) return msg.encrypted_body;
+
+    if (decryptedCache[msg.id]) return decryptedCache[msg.id];
+    if (decryptedCache[msg.encrypted_body]) return decryptedCache[msg.encrypted_body];
 
     if (isSandboxMode) {
       return (msg as any).decryptedText || msg.encrypted_body;
     }
 
-    // Direct Message Decryption
     const myPrivateKeyJWK = localStorage.getItem(`whatsapp_private_key_jwk_${currentUserId}`);
     if (!myPrivateKeyJWK) {
       return '🔒 Message Encrypted (Local Private key missing)';
     }
 
-    // Determine correct encrypted key depending on roles
     const encryptedKey = msg.sender_id === currentUserId 
       ? msg.sender_encrypted_key 
       : msg.receiver_encrypted_key;
 
     if (!encryptedKey) {
-      return msg.encrypted_body; // Fallback to raw if key was not assigned
+      return msg.encrypted_body;
     }
 
-    // Return decrypt status asynchronously (we will lazy decode or hold decrypt states)
-    return null; 
+    try {
+      const decrypted = await decryptMessage(msg.encrypted_body, encryptedKey, myPrivateKeyJWK);
+      decryptedCache[msg.id] = decrypted;
+      return decrypted;
+    } catch (err) {
+      return '🔒 Decryption Error: Key mismatch.';
+    }
   };
 
   // We will build a small stateful hook/component to render decryptions cleanly
@@ -2502,14 +2634,17 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
               </div>
             </div>
 
-            {messages.map((msg, index) => {
+            {visibleMessages.map((msg, index) => {
               const isMe = msg.sender_id === currentUserId;
               const senderName = isMe ? 'You' : (profiles.find(p => p.id === msg.sender_id)?.username || msg.sender?.username || 'Secured Client');
 
-              const prevMsg = index > 0 ? messages[index - 1] : null;
+              const prevMsg = index > 0 ? visibleMessages[index - 1] : null;
               const currentDateStr = getFriendlyDateHeader(msg.created_at);
               const prevDateStr = prevMsg ? getFriendlyDateHeader(prevMsg.created_at) : null;
               const showDateHeader = currentDateStr !== prevDateStr;
+
+              const isViewOnce = msg.view_once || msg.message_mode === 'view_once';
+              const isAutoDelete = msg.message_mode === 'auto_delete' && !!msg.expires_at;
 
               const groupCallInfo = parseGroupCallEvent(msg);
               if (groupCallInfo) {
@@ -2647,30 +2782,71 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
                         </span>
                       )}
 
-                      {/* Chat Text (with E2E decrypt support) */}
-                      <DecryptedBubble msg={msg} />
+                      {/* View Once vs Auto Delete vs Normal Message Content */}
+                      {isViewOnce ? (
+                        isMe ? (
+                          <div className="flex items-center gap-2 py-1.5 px-3 bg-emerald-950/40 rounded-xl border border-emerald-500/20 text-xs text-emerald-300 my-1">
+                            <Eye className="w-4 h-4 text-emerald-400 shrink-0" />
+                            <span className="font-semibold text-[11px]">
+                              {msg.opened_at || (Array.isArray(msg.opened_by) && msg.opened_by.length > 0)
+                                ? 'View Once Message (Opened)'
+                                : 'View Once Text Message'}
+                            </span>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              const text = await getRenderableMessageContent(msg);
+                              setViewOnceActiveMsg(msg);
+                              setViewOnceDecryptedText(text);
+                            }}
+                            className="w-full py-2.5 px-3.5 bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/40 text-emerald-300 rounded-xl text-xs font-bold transition-all flex items-center justify-between gap-3 cursor-pointer shadow-md my-1"
+                          >
+                            <div className="flex items-center gap-2">
+                              <Eye className="w-4 h-4 text-emerald-400 animate-pulse" />
+                              <span>🔒 View Once Message</span>
+                            </div>
+                            <span className="text-[10px] bg-emerald-500 text-slate-950 px-2.5 py-1 rounded-full font-bold">
+                              Tap to Open
+                            </span>
+                          </button>
+                        )
+                      ) : (
+                        <DecryptedBubble msg={msg} />
+                      )}
 
-                      {/* Timestamp & checkmarks */}
-                      <div className="flex items-center justify-end gap-1.5 mt-1 font-mono text-[9px] text-gray-400 select-none">
-                        <span 
-                          title={new Date(msg.created_at).toLocaleString([], { dateStyle: 'long', timeStyle: 'short' })}
-                          className="cursor-help hover:text-gray-200 transition-colors"
-                        >
-                          {new Date(msg.created_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true })}
-                        </span>
-                        {isMe && (
-                          <>
-                            {(!msg.status || msg.status === 'sent') ? (
-                              <Check className="w-3.5 h-3.5 text-gray-500 animate-pulse" title="Sent ✓" />
-                            ) : msg.status === 'delivered' ? (
-                              <CheckCheck className="w-3.5 h-3.5 text-gray-400" title="Delivered ✓✓" />
-                            ) : msg.status === 'read' ? (
-                              <CheckCheck className="w-3.5 h-3.5 text-[#53bdeb]" title="Seen/Read ✓✓" />
-                            ) : (
-                              <Check className="w-3.5 h-3.5 text-gray-500" />
-                            )}
-                          </>
-                        )}
+                      {/* Timestamp, countdown & checkmarks */}
+                      <div className="flex items-center justify-between gap-2 mt-1 font-mono text-[9px] text-gray-400 select-none">
+                        <div>
+                          {isAutoDelete && msg.expires_at && (
+                            <CountdownTimer 
+                              expiresAt={msg.expires_at} 
+                              onExpire={() => handleMessageExpired(msg.id)} 
+                            />
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <span 
+                            title={new Date(msg.created_at).toLocaleString([], { dateStyle: 'long', timeStyle: 'short' })}
+                            className="cursor-help hover:text-gray-200 transition-colors"
+                          >
+                            {new Date(msg.created_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true })}
+                          </span>
+                          {isMe && (
+                            <>
+                              {(!msg.status || msg.status === 'sent') ? (
+                                <Check className="w-3.5 h-3.5 text-gray-500 animate-pulse" title="Sent ✓" />
+                              ) : msg.status === 'delivered' ? (
+                                <CheckCheck className="w-3.5 h-3.5 text-gray-400" title="Delivered ✓✓" />
+                              ) : msg.status === 'read' || (isViewOnce && (msg.opened_at || (Array.isArray(msg.opened_by) && msg.opened_by.length > 0))) ? (
+                                <CheckCheck className="w-3.5 h-3.5 text-[#53bdeb]" title="Opened / Read ✓✓" />
+                              ) : (
+                                <Check className="w-3.5 h-3.5 text-gray-500" />
+                              )}
+                            </>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -2694,20 +2870,54 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
           {/* Send Input Bar */}
           <form 
             onSubmit={handleSendMessage}
-            className="h-[64px] bg-[#202c33] border-t border-gray-800/60 px-6 flex items-center gap-4 shrink-0 relative z-10"
+            className="h-[64px] bg-[#202c33] border-t border-gray-800/60 px-4 sm:px-6 flex items-center gap-3 shrink-0 relative z-10"
           >
             <div className="flex-1 relative">
               <input 
                 type="text" 
-                placeholder="Type your secure E2E message here..." 
+                placeholder={
+                  disappearingSettings.mode === 'view_once'
+                    ? "Type 1-time view once message..."
+                    : disappearingSettings.mode === 'auto_delete'
+                      ? "Type self-destructing text message..."
+                      : "Type your secure E2E message here..."
+                }
                 value={inputMessage}
                 onChange={(e) => handleInputChange(e.target.value)}
-                className="w-full bg-[#2a3942] text-sm text-white placeholder-gray-400 border border-gray-800 pl-4 pr-10 py-2.5 rounded-xl focus:outline-none focus:border-emerald-500/60 transition-colors"
+                className="w-full bg-[#2a3942] text-sm text-white placeholder-gray-400 border border-gray-800 pl-4 pr-12 py-2.5 rounded-xl focus:outline-none focus:border-emerald-500/60 transition-colors"
               />
               <span className="absolute right-3.5 top-1/2 -translate-y-1/2 flex items-center gap-2">
                 <Lock className="w-4 h-4 text-emerald-400/65" title="Writing unhackable keystream" />
               </span>
             </div>
+
+            {/* Disappearing / View Once Options Button */}
+            <button
+              type="button"
+              onClick={() => setShowDisappearingModal(true)}
+              title="View Once & Auto-Delete Options"
+              className={`p-2.5 rounded-xl border transition-all flex items-center justify-center cursor-pointer shrink-0 ${
+                disappearingSettings.mode === 'view_once'
+                  ? 'bg-emerald-500/20 border-emerald-500 text-emerald-400 font-bold shadow-md animate-pulse'
+                  : disappearingSettings.mode === 'auto_delete'
+                    ? 'bg-amber-500/20 border-amber-500 text-amber-400 font-bold shadow-md'
+                    : 'bg-[#2a3942] border-gray-800 text-gray-400 hover:text-white hover:bg-gray-700/60'
+              }`}
+            >
+              {disappearingSettings.mode === 'view_once' ? (
+                <div className="flex items-center gap-1">
+                  <Eye className="w-4 h-4 text-emerald-400" />
+                  <span className="text-[10px] font-bold">1</span>
+                </div>
+              ) : disappearingSettings.mode === 'auto_delete' ? (
+                <div className="flex items-center gap-1">
+                  <Clock className="w-4 h-4 text-amber-400" />
+                  <span className="text-[10px] font-bold">Timer</span>
+                </div>
+              ) : (
+                <Sparkles className="w-4 h-4 text-gray-400" />
+              )}
+            </button>
 
             <button 
               type="submit"
@@ -3324,6 +3534,30 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
         </div>
       )}
 
+      {/* Disappearing & View Once Options Modal */}
+      <DisappearingOptionsModal
+        isOpen={showDisappearingModal}
+        onClose={() => setShowDisappearingModal(false)}
+        currentSettings={disappearingSettings}
+        onSave={(settings) => setDisappearingSettings(settings)}
+      />
+
+      {/* View Once Message Decrypted Viewer Modal */}
+      {viewOnceActiveMsg && (
+        <ViewOnceViewerModal
+          isOpen={!!viewOnceActiveMsg}
+          senderName={
+            viewOnceActiveMsg.sender_id === currentUserId
+              ? 'You'
+              : profiles.find(p => p.id === viewOnceActiveMsg.sender_id)?.username || viewOnceActiveMsg.sender?.username || 'Secured Client'
+          }
+          senderAvatar={
+            profiles.find(p => p.id === viewOnceActiveMsg.sender_id)?.avatar_url || viewOnceActiveMsg.sender?.avatar_url
+          }
+          messageText={viewOnceDecryptedText}
+          onCloseAndDestroy={() => handleDestroyViewOnce(viewOnceActiveMsg)}
+        />
+      )}
     </div>
   );
 }

@@ -55,6 +55,12 @@ ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS receiver_encrypted_key TEXT
 ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'sent';
 ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMP WITH TIME ZONE;
 ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS read_at TIMESTAMP WITH TIME ZONE;
+ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS message_mode TEXT DEFAULT 'normal';
+ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS view_once BOOLEAN DEFAULT FALSE;
+ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP WITH TIME ZONE;
+ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS opened_at TIMESTAMP WITH TIME ZONE;
+ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS opened_by JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS destroyed_at TIMESTAMP WITH TIME ZONE;
 ALTER TABLE public.group_members ADD COLUMN IF NOT EXISTS last_read_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now());
 
 -- Create highly performant indexes on foreign keys
