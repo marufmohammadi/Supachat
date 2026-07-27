@@ -115,8 +115,8 @@ export function getDeviceFingerprintDetails(currentUserId?: string): RegisterDev
 
   const pubKeyFingerprint = generatePublicKeyFingerprint(currentUserId);
 
-  // Stable fingerprint component
-  const rawFingerprint = `${browser}|${version}|${os}|${platform}|${screenRes}|${timezone}|${language}`;
+  // Stable fingerprint component including unique deviceId
+  const rawFingerprint = `${deviceId}|${browser}|${version}|${os}|${platform}|${screenRes}|${timezone}|${language}`;
   const deviceFingerprint = simpleHash(rawFingerprint);
 
   const deviceName = `${browser} on ${os}`;

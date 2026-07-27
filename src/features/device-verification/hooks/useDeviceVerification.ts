@@ -75,21 +75,54 @@ export function useDeviceVerification({ currentUserId, isSandboxMode, onForceLog
   useEffect(() => {
     if (!currentUserId || !currentDevice) return;
 
+    let securityChannel: any = null;
+    let tableChannel: any = null;
+
+    const executeForceLogout = async () => {
+      console.warn('[DEVICE-HOOK] Current device session revoked! Executing instant force logout...');
+      try {
+        await supabase.auth.signOut({ scope: 'local' });
+      } catch (err) {
+        console.warn('[DEVICE-HOOK] signOut error:', err);
+      }
+      localStorage.clear();
+      sessionStorage.clear();
+
+      if (securityChannel) supabase.removeChannel(securityChannel);
+      if (tableChannel) supabase.removeChannel(tableChannel);
+
+      if (onForceLogout) {
+        onForceLogout();
+      } else {
+        window.location.reload();
+      }
+    };
+
     // Sandbox event listener
     const handleSandboxRevoked = (e: CustomEvent) => {
       const revokedId = e.detail?.deviceId;
       if (revokedId === currentDevice.id) {
         console.warn('[DEVICE-HOOK] This device was revoked in Sandbox mode. Logging out...');
-        if (onForceLogout) onForceLogout();
+        executeForceLogout();
       }
     };
 
     window.addEventListener('sandbox_device_revoked', handleSandboxRevoked as EventListener);
 
-    // Supabase Realtime channel listener for table user_devices
-    let channel: any = null;
     if (!isSandboxMode) {
-      channel = supabase
+      // Broadcast channel for instant force logout signal
+      securityChannel = supabase
+        .channel(`device_security_${currentUserId}`)
+        .on('broadcast', { event: 'force_logout' }, payload => {
+          const revokedId = payload?.payload?.deviceId;
+          if (revokedId === currentDevice.id || !revokedId) {
+            executeForceLogout();
+          }
+        })
+        .subscribe();
+
+      // Postgres changes listener on user_devices table
+      tableChannel = supabase
         .channel(`user_devices_revocation_${currentUserId}`)
         .on(
           'postgres_changes',
@@ -108,13 +141,7 @@ export function useDeviceVerification({ currentUserId, isSandboxMode, onForceLog
               (updated && (updated.id === currentDevice.id || updated.device_fingerprint === currentDevice.device_fingerprint) && updated.is_revoked) ||
               (payload.eventType === 'DELETE' && deleted && (deleted.id === currentDevice.id || deleted.device_fingerprint === currentDevice.device_fingerprint))
             ) {
-              console.warn('[DEVICE-HOOK] Current device session revoked by Primary Device! Executing instant force logout...');
-              if (onForceLogout) {
-                onForceLogout();
-              } else {
-                supabase.auth.signOut();
-                window.location.reload();
-              }
+              executeForceLogout();
             } else {
               // Refresh linked devices list if another device changed
               refreshDevices();
@@ -126,7 +153,8 @@ export function useDeviceVerification({ currentUserId, isSandboxMode, onForceLog
 
     return () => {
       window.removeEventListener('sandbox_device_revoked', handleSandboxRevoked as EventListener);
-      if (channel) supabase.removeChannel(channel);
+      if (securityChannel) supabase.removeChannel(securityChannel);
+      if (tableChannel) supabase.removeChannel(tableChannel);
     };
   }, [currentUserId, currentDevice, isSandboxMode, onForceLogout, refreshDevices]);
 

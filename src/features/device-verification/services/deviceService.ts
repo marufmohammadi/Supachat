@@ -79,7 +79,7 @@ export const deviceService = {
     if (isSandboxMode) {
       const existingDevices = getSandboxDevices(userId);
       const existingIndex = existingDevices.findIndex(
-        d => d.device_fingerprint === payload.device_fingerprint
+        d => d.device_id === payload.device_id
       );
 
       const hasPrimary = existingDevices.some(d => d.is_primary && !d.is_revoked);
@@ -141,12 +141,12 @@ export const deviceService = {
       const hasPrimary = (allUserDevices || []).some(d => d.is_primary);
       const isPrimary = !forceLinkedDevice && !hasPrimary;
 
-      // 2. Check if user device exists with this fingerprint
+      // 2. Check if user device exists with this device_id
       const { data: existing, error: fetchError } = await supabase
         .from('user_devices')
         .select('*')
         .eq('user_id', userId)
-        .eq('device_fingerprint', payload.device_fingerprint)
+        .eq('device_id', payload.device_id)
         .maybeSingle();
 
       if (fetchError && fetchError.code !== 'PGRST116') {
@@ -280,6 +280,26 @@ export const deviceService = {
     }
   },
 
+  async isDeviceApproved(userId: string, deviceId: string, isSandboxMode: boolean): Promise<boolean> {
+    if (!userId || !deviceId) return false;
+    if (isSandboxMode) {
+      const devices = getSandboxDevices(userId).filter(d => !d.is_revoked);
+      return devices.some(d => d.device_id === deviceId || d.id === deviceId);
+    }
+    try {
+      const { data, error } = await supabase
+        .from('user_devices')
+        .select('id, device_id, is_revoked')
+        .eq('user_id', userId)
+        .eq('is_revoked', false);
+
+      if (error || !data) return false;
+      return data.some(d => d.device_id === deviceId || d.id === deviceId);
+    } catch {
+      return false;
+    }
+  },
+
   async logoutDevice(userId: string, deviceTableId: string, isSandboxMode: boolean): Promise<boolean> {
     if (isSandboxMode) {
       const list = getSandboxDevices(userId).map(d => 
@@ -293,7 +313,7 @@ export const deviceService = {
     }
 
     try {
-      // Mark as revoked AND delete so realtime triggers change event
+      // 1. Mark as revoked in user_devices
       const { error: updateError } = await supabase
         .from('user_devices')
         .update({ is_revoked: true, updated_at: new Date().toISOString() })
@@ -301,14 +321,27 @@ export const deviceService = {
         .eq('user_id', userId);
 
       if (updateError) {
-        console.error('[DEVICE-VERIFICATION] Revoke device error:', updateError.message);
-        // Fallback to delete
-        await supabase
-          .from('user_devices')
-          .delete()
-          .eq('id', deviceTableId)
-          .eq('user_id', userId);
+        console.warn('[DEVICE-VERIFICATION] Update is_revoked warning:', updateError.message);
       }
+
+      // 2. Broadcast instant force_logout event on realtime channel
+      try {
+        const securityChannel = supabase.channel(`device_security_${userId}`);
+        await securityChannel.send({
+          type: 'broadcast',
+          event: 'force_logout',
+          payload: { deviceId: deviceTableId }
+        });
+      } catch (broadcastErr) {
+        console.warn('[DEVICE-VERIFICATION] Broadcast error:', broadcastErr);
+      }
+
+      // 3. Delete from table as well to trigger postgres_changes DELETE
+      await supabase
+        .from('user_devices')
+        .delete()
+        .eq('id', deviceTableId)
+        .eq('user_id', userId);
 
       return true;
     } catch (err) {
@@ -388,6 +421,25 @@ export const deviceService = {
       if (idx >= 0) {
         reqs[idx].status = status;
         saveSandboxRequests(userId, reqs);
+
+        if (status === 'approved') {
+          const req = reqs[idx];
+          const payload: RegisterDevicePayload = {
+            device_id: req.requester_device_id,
+            device_fingerprint: req.requester_fingerprint,
+            device_name: req.requester_device_name,
+            browser: req.requester_browser,
+            browser_version: '1.0',
+            operating_system: req.requester_os,
+            platform: 'Web',
+            screen_resolution: '1920x1080',
+            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+            language: navigator.language,
+            public_key_fingerprint: '3B:9C:12:DF'
+          };
+          await this.registerDevice(userId, payload, true, true);
+        }
+
         window.dispatchEvent(new CustomEvent('sandbox_login_request_updated', { detail: reqs[idx] }));
         return true;
       }
@@ -395,10 +447,29 @@ export const deviceService = {
     }
 
     try {
-      const { error } = await supabase
+      const { data: updatedReq, error } = await supabase
         .from('device_login_requests')
         .update({ status })
-        .eq('id', requestId);
+        .eq('id', requestId)
+        .select()
+        .single();
+
+      if (!error && updatedReq && status === 'approved') {
+        const payload: RegisterDevicePayload = {
+          device_id: updatedReq.requester_device_id,
+          device_fingerprint: updatedReq.requester_fingerprint,
+          device_name: updatedReq.requester_device_name,
+          browser: updatedReq.requester_browser,
+          browser_version: '1.0',
+          operating_system: updatedReq.requester_os,
+          platform: 'Web',
+          screen_resolution: '1920x1080',
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          language: navigator.language,
+          public_key_fingerprint: '3B:9C:12:DF'
+        };
+        await this.registerDevice(updatedReq.user_id, payload, false, true);
+      }
 
       return !error;
     } catch {

@@ -546,10 +546,10 @@ CREATE TABLE IF NOT EXISTS public.user_devices (
   is_revoked BOOLEAN DEFAULT false,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
-  CONSTRAINT unique_user_device_fingerprint UNIQUE(user_id, device_fingerprint)
+  CONSTRAINT unique_user_device_id UNIQUE(user_id, device_id)
 );
 
--- Add columns if table existed without them
+-- Add columns and fix constraints if table existed before
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='user_devices' AND column_name='is_primary') THEN
@@ -560,8 +560,12 @@ BEGIN
   END IF;
 END $$;
 
+ALTER TABLE public.user_devices DROP CONSTRAINT IF EXISTS unique_user_device_fingerprint;
+
 CREATE INDEX IF NOT EXISTS idx_user_devices_user_id ON public.user_devices(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_devices_device_id ON public.user_devices(device_id);
 CREATE INDEX IF NOT EXISTS idx_user_devices_fingerprint ON public.user_devices(device_fingerprint);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_one_primary_per_user ON public.user_devices (user_id) WHERE (is_primary = true AND is_revoked = false);
 
 -- Enable RLS for user_devices
 ALTER TABLE public.user_devices ENABLE ROW LEVEL SECURITY;

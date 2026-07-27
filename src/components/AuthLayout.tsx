@@ -37,6 +37,11 @@ export default function AuthLayout({ onAuthSuccess, onOpenDbSetup, isDbOffline =
         if (prev <= 1) {
           clearInterval(interval);
           setWaitingForApproval(false);
+          setPendingRequestId(null);
+          setPendingSession(null);
+          supabase.auth.signOut({ scope: 'local' });
+          localStorage.clear();
+          sessionStorage.clear();
           setErrorText('Login request timed out. Please try again or approve on primary device.');
           return 0;
         }
@@ -50,7 +55,7 @@ export default function AuthLayout({ onAuthSuccess, onOpenDbSetup, isDbOffline =
   useEffect(() => {
     if (!pendingRequestId) return;
 
-    const handleSandboxUpdate = (e: CustomEvent) => {
+    const handleSandboxUpdate = async (e: CustomEvent) => {
       const req = e.detail;
       if (req && req.id === pendingRequestId) {
         if (req.status === 'approved') {
@@ -60,6 +65,10 @@ export default function AuthLayout({ onAuthSuccess, onOpenDbSetup, isDbOffline =
         } else if (req.status === 'declined') {
           setWaitingForApproval(false);
           setPendingRequestId(null);
+          setPendingSession(null);
+          await supabase.auth.signOut({ scope: 'local' });
+          localStorage.clear();
+          sessionStorage.clear();
           setErrorText('Login request was declined by your Primary Device.');
         }
       }
@@ -78,7 +87,7 @@ export default function AuthLayout({ onAuthSuccess, onOpenDbSetup, isDbOffline =
           table: 'device_login_requests',
           filter: `id=eq.${pendingRequestId}`
         },
-        payload => {
+        async payload => {
           const req = payload.new as any;
           if (req) {
             if (req.status === 'approved') {
@@ -88,6 +97,10 @@ export default function AuthLayout({ onAuthSuccess, onOpenDbSetup, isDbOffline =
             } else if (req.status === 'declined') {
               setWaitingForApproval(false);
               setPendingRequestId(null);
+              setPendingSession(null);
+              await supabase.auth.signOut({ scope: 'local' });
+              localStorage.clear();
+              sessionStorage.clear();
               setErrorText('Login request was declined by your Primary Device.');
             }
           }
@@ -132,6 +145,34 @@ export default function AuthLayout({ onAuthSuccess, onOpenDbSetup, isDbOffline =
     }
   };
 
+  const checkDeviceAndCompleteAuth = async (session: any) => {
+    const userId = session.user.id;
+    const primaryDevice = await deviceService.getPrimaryDevice(userId, false);
+    const currentFpPayload = getDeviceFingerprintDetails(userId);
+
+    if (primaryDevice) {
+      const isPrimary = primaryDevice.device_id === currentFpPayload.device_id && !primaryDevice.is_revoked;
+      const isApproved = await deviceService.isDeviceApproved(userId, currentFpPayload.device_id, false);
+
+      if (isPrimary || isApproved) {
+        await deviceService.registerDevice(userId, currentFpPayload, false, !isPrimary);
+        onAuthSuccess(session, false);
+      } else {
+        // SECONDARY DEVICE LOGIN ATTEMPT! Requires Primary Device approval
+        console.log('[DEVICE-VERIFICATION] Secondary device detected. Requesting Primary Device approval...');
+        const req = await deviceService.createLoginRequest(userId, currentFpPayload, false);
+        setPendingRequestId(req.id);
+        setPendingSession(session);
+        setWaitingForApproval(true);
+        setApprovalCountdown(60);
+      }
+    } else {
+      // First time login for user -> Register as Primary Device
+      await deviceService.registerDevice(userId, currentFpPayload, false, false);
+      onAuthSuccess(session, false);
+    }
+  };
+
   const handleAuth = async (e: FormEvent) => {
     e.preventDefault();
     setLoading(true);
@@ -160,7 +201,7 @@ export default function AuthLayout({ onAuthSuccess, onOpenDbSetup, isDbOffline =
           setSuccessText('Sign up successful! Please check your email inbox to verify your account or sign in directly if verification is disabled in your Supabase project.');
           setIsSignUp(false);
         } else if (data.session) {
-          onAuthSuccess(data.session, false);
+          await checkDeviceAndCompleteAuth(data.session);
         }
       } else {
         // Sign in
@@ -189,7 +230,7 @@ export default function AuthLayout({ onAuthSuccess, onOpenDbSetup, isDbOffline =
             }
 
             if (signUpData.session) {
-              onAuthSuccess(signUpData.session, false);
+              await checkDeviceAndCompleteAuth(signUpData.session);
               return;
             } else if (signUpData.user) {
               const { data: reSignInData, error: reSignInError } = await supabase.auth.signInWithPassword({
@@ -197,7 +238,7 @@ export default function AuthLayout({ onAuthSuccess, onOpenDbSetup, isDbOffline =
                 password,
               });
               if (!reSignInError && reSignInData.session) {
-                onAuthSuccess(reSignInData.session, false);
+                await checkDeviceAndCompleteAuth(reSignInData.session);
                 return;
               } else {
                 setSuccessText('Auto-registered successfully! Logging you in via interactive sandbox mode...');
@@ -222,23 +263,7 @@ export default function AuthLayout({ onAuthSuccess, onOpenDbSetup, isDbOffline =
         }
 
         if (data.session) {
-          const userId = data.session.user.id;
-          // Check Primary Device status
-          const primaryDevice = await deviceService.getPrimaryDevice(userId, false);
-          const currentFpPayload = getDeviceFingerprintDetails(userId);
-
-          if (primaryDevice && primaryDevice.device_fingerprint !== currentFpPayload.device_fingerprint) {
-            // Secondary device login attempt! Requires Primary Device approval
-            console.log('[DEVICE-VERIFICATION] Secondary device detected. Requesting Primary Device approval...');
-            const req = await deviceService.createLoginRequest(userId, currentFpPayload, false);
-            setPendingRequestId(req.id);
-            setPendingSession(data.session);
-            setWaitingForApproval(true);
-            setApprovalCountdown(60);
-          } else {
-            // First/Primary Device login!
-            onAuthSuccess(data.session, false);
-          }
+          await checkDeviceAndCompleteAuth(data.session);
         }
       }
     } catch (err: any) {

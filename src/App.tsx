@@ -3,6 +3,29 @@ import { supabase } from './lib/supabase';
 import AuthLayout from './components/AuthLayout';
 import ChatLayout from './components/ChatLayout';
 import DatabaseSetupModal from './components/DatabaseSetupModal';
+import { deviceService, getDeviceFingerprintDetails } from './features/device-verification';
+
+async function isDeviceAuthorized(userId: string): Promise<boolean> {
+  try {
+    const primary = await deviceService.getPrimaryDevice(userId, false);
+    if (!primary) {
+      // No primary device registered yet -> First login will create Primary Device
+      return true;
+    }
+    const currentFp = getDeviceFingerprintDetails(userId);
+    
+    // Check 1: Does current device_id match the Primary Device's device_id?
+    if (primary.device_id === currentFp.device_id && !primary.is_revoked) {
+      return true;
+    }
+
+    // Check 2: Is this device_id registered as an approved Linked Device in user_devices?
+    const isApproved = await deviceService.isDeviceApproved(userId, currentFp.device_id, false);
+    return isApproved;
+  } catch {
+    return false;
+  }
+}
 
 export default function App() {
   const [session, setSession] = useState<any>(null);
@@ -15,10 +38,13 @@ export default function App() {
     // Check active session on startup if not in sandbox mode
     const getSession = async () => {
       try {
-        const { data: { session: activeSession }, error } = await supabase.auth.getSession();
+        const { data: { session: activeSession } } = await supabase.auth.getSession();
         if (activeSession) {
-          setSession(activeSession);
-          setIsSandboxMode(false);
+          const authorized = await isDeviceAuthorized(activeSession.user.id);
+          if (authorized) {
+            setSession(activeSession);
+            setIsSandboxMode(false);
+          }
         }
         setIsDbOffline(false);
       } catch (err: any) {
@@ -35,9 +61,12 @@ export default function App() {
     getSession();
 
     // Listen for Auth Changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, newSession) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, newSession) => {
       if (newSession && !isSandboxMode) {
-        setSession(newSession);
+        const authorized = await isDeviceAuthorized(newSession.user.id);
+        if (authorized) {
+          setSession(newSession);
+        }
       } else if (!newSession && !isSandboxMode) {
         setSession(null);
       }
@@ -54,9 +83,15 @@ export default function App() {
   };
 
   const handleLogout = async () => {
-    if (!isSandboxMode) {
-      await supabase.auth.signOut();
+    try {
+      if (!isSandboxMode) {
+        await supabase.auth.signOut({ scope: 'local' });
+      }
+    } catch (err) {
+      console.warn('Logout signOut warning:', err);
     }
+    localStorage.clear();
+    sessionStorage.clear();
     setSession(null);
     setIsSandboxMode(false);
   };
