@@ -873,18 +873,22 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
       let memberError: any = null;
 
       if (hasCol) {
-        const res = await supabase
-          .from('group_members')
-          .select('group_id, last_read_at')
-          .eq('user_id', currentUserId);
-        memberData = res.data;
-        memberError = res.error;
+        try {
+          const res = await supabase
+            .from('group_members')
+            .select('group_id, last_read_at')
+            .eq('user_id', currentUserId);
+          memberData = res.data;
+          memberError = res.error;
+        } catch (e) {
+          memberError = e;
+        }
       } else {
         memberError = { code: '42703', message: 'column last_read_at does not exist' };
       }
 
       if (memberError && memberError.code !== '42703') {
-        console.error('[AUDIT] fetchUnreadCounts (groups) query failed:', memberError);
+        console.warn('[AUDIT] fetchUnreadCounts (groups) notice:', memberError?.message || memberError);
       }
 
       let finalMemberData = memberData;
@@ -934,7 +938,7 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
         console.log('[AUDIT] Discarding stale fetchUnreadCounts results to avoid blinking/flickering.');
       }
     } catch (err) {
-      console.error('Failed fetching unread counts:', err);
+      console.warn('Notice fetching unread counts:', err);
     }
   };
 
