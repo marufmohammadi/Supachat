@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef, FormEvent } from 'react';
 import { 
   Search, Send, Lock, Plus, Users, ShieldCheck, CheckCheck, Check, LogOut, 
-  Database, UserCheck, Key, Shield, AlertCircle, Info, Sparkles, Archive, Image, FileText, Globe, ArrowLeft, Mic, Laptop, Eye, Clock, Timer
+  Database, UserCheck, Key, Shield, AlertCircle, Info, Sparkles, Archive, Image, FileText, Globe, ArrowLeft, Mic, Laptop, Eye, Clock, Timer, CheckCircle
 } from 'lucide-react';
 import { useDeviceVerification, LinkedDevicesModal, LoginApprovalModal } from '../features/device-verification';
 import { supabase, testSupabaseConnection } from '../lib/supabase';
 import { encryptMessage, decryptMessage, importPublicKey } from '../lib/crypto';
+import { checkHasLocalKeys, autoGenerateKeysWithRetry } from '../services/e2eeService';
 import { Profile, Group, Message, MessageMode } from '../types';
 import E2EEKeyManager from './E2EEKeyManager';
 import { DisappearingOptionsModal, DisappearingSettings } from './disappearing/DisappearingOptionsModal';
@@ -475,6 +476,10 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
     groupsRef.current = groups;
   }, [groups]);
 
+  // Automatic E2EE Key Generation immediately after login
+  const [e2eeAutoStatus, setE2eeAutoStatus] = useState<'idle' | 'generating' | 'ready' | 'failed'>('idle');
+  const [e2eeToast, setE2eeToast] = useState<string | null>(null);
+
   // Load E2EE key status
   const checkLocalKeypair = () => {
     const pub = localStorage.getItem(`whatsapp_public_key_jwk_${currentUserId}`);
@@ -484,7 +489,67 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
 
   useEffect(() => {
     checkLocalKeypair();
+
+    // Listen for storage changes across browser tabs to stay in sync
+    const handleStorage = (e: StorageEvent) => {
+      if (!currentUserId) return;
+      if (
+        e.key === `whatsapp_public_key_jwk_${currentUserId}` ||
+        e.key === `whatsapp_private_key_jwk_${currentUserId}`
+      ) {
+        checkLocalKeypair();
+      }
+    };
+    window.addEventListener('storage', handleStorage);
+    return () => window.removeEventListener('storage', handleStorage);
   }, [currentUserId]);
+
+  // Automatic Key Generation Trigger after Login / Session Restore
+  useEffect(() => {
+    if (!currentUserId) return;
+
+    // Safety check: If valid local keys already exist, skip generation completely
+    if (checkHasLocalKeys(currentUserId)) {
+      setHasE2EEKeys(true);
+      setE2eeAutoStatus('ready');
+      return;
+    }
+
+    let isMounted = true;
+    setE2eeAutoStatus('generating');
+
+    const runAutoGeneration = async () => {
+      const result = await autoGenerateKeysWithRetry({
+        userId: currentUserId,
+        isSandboxMode,
+        username: myProfile?.username || session?.user?.user_metadata?.username,
+        userEmail: session?.user?.email,
+        avatarUrl: myProfile?.avatar_url,
+      }, 3);
+
+      if (!isMounted) return;
+
+      if (result.success) {
+        setHasE2EEKeys(true);
+        setE2eeAutoStatus('ready');
+        // Show small toast only ONCE if keys were newly generated automatically
+        if (!result.alreadyExisted) {
+          setE2eeToast('✅ Secure encryption is ready');
+          setTimeout(() => {
+            if (isMounted) setE2eeToast(null);
+          }, 4000);
+        }
+      } else {
+        setE2eeAutoStatus('failed');
+      }
+    };
+
+    runAutoGeneration();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [currentUserId, isSandboxMode, myProfile?.username, session?.user?.email]);
 
   // Initial Sync Data
   useEffect(() => {
@@ -2386,6 +2451,42 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
         </div>
 
         {/* Sync Warn Alerts */}
+        {e2eeAutoStatus === 'failed' && (
+          <div className="m-3 p-3 bg-amber-500/15 border border-amber-500/20 rounded-xl space-y-2 text-left">
+            <div className="flex gap-2 items-center justify-between text-amber-300 text-xs font-semibold">
+              <div className="flex items-center gap-2">
+                <Shield className="w-4 h-4 text-amber-400 shrink-0" />
+                <span>Preparing secure encryption...</span>
+              </div>
+              <button
+                onClick={async () => {
+                  setE2eeAutoStatus('generating');
+                  const res = await autoGenerateKeysWithRetry({
+                    userId: currentUserId,
+                    isSandboxMode,
+                    username: myProfile?.username || session?.user?.user_metadata?.username,
+                    userEmail: session?.user?.email,
+                    avatarUrl: myProfile?.avatar_url,
+                  }, 3);
+                  if (res.success) {
+                    setHasE2EEKeys(true);
+                    setE2eeAutoStatus('ready');
+                    if (!res.alreadyExisted) {
+                      setE2eeToast('✅ Secure encryption is ready');
+                      setTimeout(() => setE2eeToast(null), 4000);
+                    }
+                  } else {
+                    setE2eeAutoStatus('failed');
+                  }
+                }}
+                className="px-2.5 py-1 bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-[11px] rounded transition-colors cursor-pointer"
+              >
+                Retry
+              </button>
+            </div>
+          </div>
+        )}
+
         {dbStatus === 'error' && (
           <div className="m-3 p-3 bg-rose-500/15 border border-rose-500/20 rounded-xl space-y-2 text-left">
             <div className="flex gap-2 items-center text-rose-300 text-xs font-semibold">
@@ -3652,6 +3753,14 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
           setProfiles(prev => prev.map(p => p.id === updated.id ? updated : p));
         }}
       />
+
+      {/* E2EE Ready Toast Notification */}
+      {e2eeToast && (
+        <div className="fixed bottom-6 right-6 z-50 bg-[#111b21] border border-emerald-500/30 text-emerald-300 px-4 py-2.5 rounded-xl shadow-2xl flex items-center gap-2 text-xs font-semibold animate-fade-in backdrop-blur-md">
+          <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0" />
+          <span>{e2eeToast}</span>
+        </div>
+      )}
     </div>
   );
 }

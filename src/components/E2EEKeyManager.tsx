@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Key, Shield, ShieldCheck, RefreshCw, Eye, EyeOff, AlertTriangle, HelpCircle } from 'lucide-react';
-import { generateE2EKeyPair } from '../lib/crypto';
-import { supabase } from '../lib/supabase';
+import { generateAndSaveE2EEKeys } from '../services/e2eeService';
 
 interface E2EEKeyManagerProps {
   userId: string | undefined;
@@ -44,68 +43,21 @@ export default function E2EEKeyManager({
     setLoading(true);
     setErrorString(null);
     try {
-      const keys = await generateE2EKeyPair();
-      
-      // Save locally
-      localStorage.setItem(`whatsapp_public_key_jwk_${userId}`, keys.publicKeyJWK);
-      localStorage.setItem(`whatsapp_private_key_jwk_${userId}`, keys.privateKeyJWK);
-      
-      setPublicKeyJWK(keys.publicKeyJWK);
-      setPrivateKeyJWK(keys.privateKeyJWK);
+      const res = await generateAndSaveE2EEKeys({
+        userId,
+        isSandboxMode,
+        username,
+        userEmail,
+        avatarUrl,
+        force: true
+      });
 
-      // Upload public key to database so others can encrypt messages for me
-      if (!isSandboxMode) {
-        // Safety Fallback: Query to ensure the profile row exists. If not, insert it (to bypass trigger delay/absence)
-        const { data: existingProfile, error: checkError } = await supabase
-          .from('profiles')
-          .select('id')
-          .eq('id', userId)
-          .maybeSingle();
-
-        if (checkError) {
-          console.warn('Profile schema detection failed:', checkError.message);
-          setErrorString('Database schema check failed. Make sure you applied the SQL Editor Setup using the button!');
-          onKeysGenerated();
-          return;
-        }
-
-        if (!existingProfile) {
-          // Attempt automated registration insertion
-          const { error: insertError } = await supabase
-            .from('profiles')
-            .insert({
-              id: userId,
-              username: username || userEmail?.split('@')[0] || 'User',
-              avatar_url: avatarUrl || `https://api.dicebear.com/7.x/adventurer/svg?seed=${userId}`,
-              public_key: keys.publicKeyJWK
-            });
-
-          if (insertError) {
-            console.error('Failed to auto-insert profile:', insertError.message);
-            if (insertError.message.includes('public_key') || insertError.message.includes('schema cache')) {
-              setErrorString('Could not write public_key column. Please open the SQL console (database cylinder icon in the sidebar) and run the setup script to add this column to your Supabase tables.');
-            } else {
-              setErrorString('Profile insertion failed. Ensure you have run the setup SQL script in your Supabase SQL Editor.');
-            }
-          }
-        } else {
-          // Attempt normal update
-          const { error: updateError } = await supabase
-            .from('profiles')
-            .update({ public_key: keys.publicKeyJWK })
-            .eq('id', userId);
-
-          if (updateError) {
-            console.error('Failed to update public key profile:', updateError.message);
-            if (updateError.message.includes('public_key') || updateError.message.includes('schema cache')) {
-              setErrorString('Could not find public_key column in your profiles table. Please open the SQL console (database cylinder icon in the sidebar) and run the setup script to add this column to your Supabase tables.');
-            } else {
-              setErrorString('Local keys ready, but failed to upload to server. Ensure Supabase SQL schema is loaded.');
-            }
-          }
-        }
+      if (!res.success) {
+        setErrorString('Failed to generate crypto keys: ' + (res.error || 'Unknown error'));
+      } else if (res.keys) {
+        setPublicKeyJWK(res.keys.publicKeyJWK);
+        setPrivateKeyJWK(res.keys.privateKeyJWK);
       }
-
       onKeysGenerated();
     } catch (err: any) {
       console.error('Key generation error:', err);
