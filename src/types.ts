@@ -1,9 +1,11 @@
 export interface Profile {
   id: string;
-  username: string;
+  username: string; // Handle/username e.g. maruf
+  display_name?: string | null; // Full display name e.g. Maruf Mohammadi
+  email?: string | null;
   avatar_url: string;
   public_key?: string | null;
-  created_at: string;
+  created_at?: string;
 }
 
 export interface Group {

@@ -71,6 +71,21 @@ export function useDeviceVerification({ currentUserId, isSandboxMode, onForceLog
     registerAsync();
   }, [currentUserId, isSandboxMode]);
 
+  // ACTIVE DEVICE HEARTBEAT (keeps last_active fresh every 25s while session is active)
+  useEffect(() => {
+    if (!currentUserId || !currentDevice) return;
+
+    deviceService.updateHeartbeat(currentUserId, currentDevice.device_id, isSandboxMode);
+
+    const interval = setInterval(() => {
+      deviceService.updateHeartbeat(currentUserId, currentDevice.device_id, isSandboxMode);
+    }, 25000);
+
+    return () => {
+      clearInterval(interval);
+    };
+  }, [currentUserId, currentDevice, isSandboxMode]);
+
   // INSTANT DEVICE REVOCATION LISTENER (Fixes bug where revoked device stayed logged in)
   useEffect(() => {
     if (!currentUserId || !currentDevice) return;

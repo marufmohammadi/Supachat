@@ -93,7 +93,7 @@ export const ActiveVideoCallScreen: React.FC<ActiveVideoCallScreenProps> = ({
       <div className="relative z-10 w-full px-6 py-4 bg-gradient-to-b from-black/60 to-transparent flex items-center justify-between">
         <div className="flex flex-col">
           <span className="text-xs font-mono uppercase tracking-widest text-emerald-400 font-semibold flex items-center gap-1">
-            <Lock className="w-3.5 h-3.5 text-emerald-400" /> WhatsApp SECURE VIDEO
+            <Lock className="w-3.5 h-3.5 text-emerald-400" /> SupaChat SECURE VIDEO
           </span>
           <h3 className="text-lg font-semibold text-white drop-shadow-md">{username}</h3>
         </div>

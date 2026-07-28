@@ -1,7 +1,9 @@
-export const SUPABASE_SCHEMA_SQL = `-- 1. CREATE USER PROFILES TABLE WITH FALLBACK COLUMN CHECKS
+export const SUPABASE_SCHEMA_SQL = `-- 1. CREATE USER PROFILES TABLE WITH INSTAGRAM-STYLE UNIQUE USERNAME SYSTEM
 CREATE TABLE IF NOT EXISTS public.profiles (
   id UUID REFERENCES auth.users ON DELETE CASCADE PRIMARY KEY,
-  username TEXT UNIQUE NOT NULL,
+  username TEXT UNIQUE NOT NULL, -- Handle/username e.g. maruf
+  display_name TEXT,             -- Full Display Name e.g. Maruf Mohammadi
+  email TEXT,                    -- Email address for username login lookup
   avatar_url TEXT,
   public_key TEXT, -- Holds the client's RSA-OAEP public key in JWK format
   created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
@@ -10,7 +12,31 @@ CREATE TABLE IF NOT EXISTS public.profiles (
 -- Force add columns if table already existed without them
 ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS public_key TEXT;
 ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS username TEXT;
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS display_name TEXT;
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS email TEXT;
 ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS avatar_url TEXT;
+
+-- Backfill display_name if null
+UPDATE public.profiles SET display_name = username WHERE display_name IS NULL OR display_name = '';
+
+-- Ensure unique index on lower(username)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_profiles_username_lower ON public.profiles (LOWER(username));
+
+-- Trigger function to automatically lower and trim username
+CREATE OR REPLACE FUNCTION public.clean_username()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF NEW.username IS NOT NULL THEN
+    NEW.username := LOWER(TRIM(NEW.username));
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_clean_username ON public.profiles;
+CREATE TRIGGER trg_clean_username
+  BEFORE INSERT OR UPDATE ON public.profiles
+  FOR EACH ROW EXECUTE FUNCTION public.clean_username();
 
 -- 2. CREATE CHAT GROUPS TABLE
 CREATE TABLE IF NOT EXISTS public.groups (
@@ -74,15 +100,34 @@ CREATE INDEX IF NOT EXISTS idx_messages_group_id ON public.messages(group_id);
 -- Copies user info automatically from auth.users metadata when signup happens
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS TRIGGER AS $$
+DECLARE
+  raw_un TEXT;
+  clean_un TEXT;
+  disp_name TEXT;
 BEGIN
-  INSERT INTO public.profiles (id, username, avatar_url)
+  raw_un := COALESCE(new.raw_user_meta_data->>'username', SPLIT_PART(new.email, '@', 1));
+  clean_un := LOWER(REGEXP_REPLACE(raw_un, '[^a-zA-Z0-9_.]', '', 'g'));
+  IF LENGTH(clean_un) < 3 THEN
+    clean_un := clean_un || '123';
+  END IF;
+  IF LENGTH(clean_un) > 30 THEN
+    clean_un := SUBSTRING(clean_un FROM 1 FOR 30);
+  END IF;
+
+  disp_name := COALESCE(new.raw_user_meta_data->>'display_name', new.raw_user_meta_data->>'username', SPLIT_PART(new.email, '@', 1));
+
+  INSERT INTO public.profiles (id, username, display_name, email, avatar_url)
   VALUES (
     new.id,
-    COALESCE(new.raw_user_meta_data->>'username', SPLIT_PART(new.email, '@', 1)),
+    clean_un,
+    disp_name,
+    new.email,
     COALESCE(new.raw_user_meta_data->>'avatar_url', 'https://api.dicebear.com/7.x/adventurer/svg?seed=' || new.id)
   )
   ON CONFLICT (id) DO UPDATE SET
     username = EXCLUDED.username,
+    display_name = EXCLUDED.display_name,
+    email = EXCLUDED.email,
     avatar_url = EXCLUDED.avatar_url;
   RETURN new;
 END;
@@ -206,13 +251,17 @@ CREATE POLICY "Allow update members" ON public.group_members FOR UPDATE
   WITH CHECK (auth.uid() = user_id);
 
 -- 8. BACKFILL PRE-EXISTING USERS (If tables are setup after accounts are created)
-INSERT INTO public.profiles (id, username, avatar_url)
+INSERT INTO public.profiles (id, username, display_name, email, avatar_url)
 SELECT 
   id, 
-  COALESCE(raw_user_meta_data->>'username', SPLIT_PART(email, '@', 1)),
+  LOWER(REGEXP_REPLACE(COALESCE(raw_user_meta_data->>'username', SPLIT_PART(email, '@', 1)), '[^a-zA-Z0-9_.]', '', 'g')),
+  COALESCE(raw_user_meta_data->>'display_name', raw_user_meta_data->>'username', SPLIT_PART(email, '@', 1)),
+  email,
   COALESCE(raw_user_meta_data->>'avatar_url', 'https://api.dicebear.com/7.x/adventurer/svg?seed=' || id)
 FROM auth.users
-ON CONFLICT (id) DO NOTHING;
+ON CONFLICT (id) DO UPDATE SET
+  display_name = EXCLUDED.display_name,
+  email = EXCLUDED.email;
 
 -- 9. DEFENSIVE ALL-ACCESS GRANTS ON THE TABLES
 -- This guarantees standard Supabase roles (anon, authenticated) can read/write the custom schemas

@@ -269,7 +269,7 @@ export const GroupCallScreen: React.FC<GroupCallScreenProps> = ({
         <div className="flex flex-col">
           <div className="flex items-center gap-2">
             <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2.5 py-0.5 rounded-full text-[10px] font-mono tracking-widest uppercase font-semibold flex items-center gap-1 shadow-sm">
-              <Shield className="w-3 h-3 text-emerald-400" /> WhatsApp Group Call
+              <Shield className="w-3 h-3 text-emerald-400" /> SupaChat Group Call
             </span>
             {isCallAdmin && (
               <span className="bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider">

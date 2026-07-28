@@ -20,7 +20,7 @@ export async function testSupabaseConnection(): Promise<boolean> {
     }
     return true;
   } catch (err) {
-    console.error('Supabase connection test failed:', err);
+    console.warn('Supabase connection test notice:', err);
     return false;
   }
 }

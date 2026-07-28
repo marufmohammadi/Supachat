@@ -243,7 +243,7 @@ export const LinkedDevicesModal: React.FC<LinkedDevicesModalProps> = ({
 
                   <div className="pt-2 border-t border-gray-700/50 flex items-center justify-between text-xs">
                     <span className="text-gray-400 flex items-center gap-1 text-[11px]">
-                      <Key className="w-3 h-3 text-amber-400" /> Key Fingerprint
+                      <Key className="w-3 h-3 text-amber-400" /> Device ID
                     </span>
                     <span className="font-mono text-emerald-300 bg-emerald-950/40 px-2 py-0.5 rounded border border-emerald-800/40 text-[11px]">
                       {activeCurrentDevice.public_key_fingerprint || '4A:8B:12:9F:C3'}
@@ -317,7 +317,7 @@ export const LinkedDevicesModal: React.FC<LinkedDevicesModalProps> = ({
                           <span className="text-gray-300">{formatDate(device.last_active)}</span>
                         </div>
                         <div>
-                          <span className="text-gray-400 block mb-0.5 text-[11px]">Key Fingerprint</span>
+                          <span className="text-gray-400 block mb-0.5 text-[11px]">Device ID</span>
                           <span className="font-mono text-gray-300 text-[11px]">
                             {device.public_key_fingerprint || '8C:1F:33:AA'}
                           </span>

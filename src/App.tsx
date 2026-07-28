@@ -7,15 +7,15 @@ import { deviceService, getDeviceFingerprintDetails } from './features/device-ve
 
 async function isDeviceAuthorized(userId: string): Promise<boolean> {
   try {
-    const primary = await deviceService.getPrimaryDevice(userId, false);
-    if (!primary) {
-      // No primary device registered yet -> First login will create Primary Device
+    const activePrimary = await deviceService.getActivePrimaryDevice(userId, false);
+    if (!activePrimary) {
+      // No active primary device registered -> Authorized to promote to Primary Device
       return true;
     }
     const currentFp = getDeviceFingerprintDetails(userId);
     
-    // Check 1: Does current device_id match the Primary Device's device_id?
-    if (primary.device_id === currentFp.device_id && !primary.is_revoked) {
+    // Check 1: Does current device_id match the active Primary Device's device_id?
+    if (activePrimary.device_id === currentFp.device_id && !activePrimary.is_revoked) {
       return true;
     }
 
@@ -38,7 +38,10 @@ export default function App() {
     // Check active session on startup if not in sandbox mode
     const getSession = async () => {
       try {
-        const { data: { session: activeSession } } = await supabase.auth.getSession();
+        const { data: { session: activeSession }, error: sessionError } = await supabase.auth.getSession();
+        if (sessionError) {
+          throw sessionError;
+        }
         if (activeSession) {
           const authorized = await isDeviceAuthorized(activeSession.user.id);
           if (authorized) {
@@ -84,6 +87,11 @@ export default function App() {
 
   const handleLogout = async () => {
     try {
+      const userId = session?.user?.id;
+      if (userId) {
+        const fp = getDeviceFingerprintDetails(userId);
+        await deviceService.handleLogoutCleanup(userId, fp.device_id, isSandboxMode);
+      }
       if (!isSandboxMode) {
         await supabase.auth.signOut({ scope: 'local' });
       }

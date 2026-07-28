@@ -103,7 +103,7 @@ export const DisappearingOptionsModal: React.FC<DisappearingOptionsModalProps> =
             </div>
             <div>
               <h3 className="text-base font-bold text-white tracking-tight">Text Disappearing Options</h3>
-              <p className="text-[11px] text-gray-400">WhatsApp-style view once & self-destruct messages</p>
+              <p className="text-[11px] text-gray-400">View once & self-destructing text options</p>
             </div>
           </div>
           <button 

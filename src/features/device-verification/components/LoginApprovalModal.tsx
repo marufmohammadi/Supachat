@@ -77,7 +77,7 @@ export const LoginApprovalModal: React.FC<LoginApprovalModalProps> = ({
               Approve New Device Login?
             </h3>
             <p className="text-xs text-gray-400 mt-0.5">
-              Someone is trying to sign into your WhatsApp account.
+              Someone is trying to sign into your SupaChat account.
             </p>
           </div>
         </div>

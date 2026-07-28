@@ -46,11 +46,11 @@ export const IncomingCallModal: React.FC<IncomingCallModalProps> = ({
         <p className="text-xs text-[#8696a0] font-mono tracking-wider flex items-center gap-1.5 mb-6 uppercase">
           {isVideo ? (
             <>
-              <Video className="w-4 h-4 text-emerald-400" /> WhatsApp Video Call
+              <Video className="w-4 h-4 text-emerald-400" /> SupaChat Video Call
             </>
           ) : (
             <>
-              <Phone className="w-4 h-4 text-emerald-400 animate-bounce" /> WhatsApp Voice Call
+              <Phone className="w-4 h-4 text-emerald-400 animate-bounce" /> SupaChat Voice Call
             </>
           )}
         </p>

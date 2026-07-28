@@ -80,7 +80,7 @@ export const QRCodeModal: React.FC<QRCodeModalProps> = ({
         {/* Content */}
         <div className="p-6 space-y-5 text-center flex flex-col items-center">
           <p className="text-xs text-gray-300 max-w-xs leading-relaxed">
-            Open WhatsApp on your secondary device, tap <strong className="text-emerald-400">⋮ -&gt; Scan QR Code</strong> and scan or enter this one-time code.
+            Open SupaChat on your secondary device, tap <strong className="text-emerald-400">⋮ -&gt; Scan QR Code</strong> and scan or enter this one-time code.
           </p>
 
           {/* QR Container */}

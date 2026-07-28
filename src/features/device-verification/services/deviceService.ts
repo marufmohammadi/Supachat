@@ -41,11 +41,23 @@ function saveSandboxRequests(userId: string, reqs: DeviceLoginRequest[]) {
   }
 }
 
+const HEARTBEAT_TIMEOUT_MS = 120000; // 2 minutes heartbeat window for active sessions
+
 export const deviceService = {
-  async getPrimaryDevice(userId: string, isSandboxMode: boolean): Promise<UserDevice | null> {
+  async getActivePrimaryDevice(userId: string, isSandboxMode: boolean): Promise<UserDevice | null> {
+    if (!userId) return null;
+
     if (isSandboxMode) {
-      const devices = getSandboxDevices(userId).filter(d => !d.is_revoked);
-      return devices.find(d => d.is_primary) || devices[0] || null;
+      const devices = getSandboxDevices(userId).filter(d => !d.is_revoked && d.is_primary);
+      const primary = devices[0];
+      if (!primary) return null;
+      if (primary.last_active) {
+        const lastActiveTime = new Date(primary.last_active).getTime();
+        if (Date.now() - lastActiveTime > HEARTBEAT_TIMEOUT_MS) {
+          return null; // Session inactive or expired
+        }
+      }
+      return primary;
     }
 
     try {
@@ -53,18 +65,161 @@ export const deviceService = {
         .from('user_devices')
         .select('*')
         .eq('user_id', userId)
+        .eq('is_primary', true)
         .eq('is_revoked', false)
-        .order('created_at', { ascending: true });
+        .order('last_active', { ascending: false })
+        .limit(1)
+        .maybeSingle();
 
-      if (error || !data || data.length === 0) {
+      if (error || !data) {
         return null;
       }
 
-      // Find explicitly marked primary or the first created device
-      const primary = data.find(d => d.is_primary) || data[0];
-      return primary as UserDevice;
+      // Check if device heartbeat is still alive (within 2 minutes)
+      if (data.last_active) {
+        const lastActiveTime = new Date(data.last_active).getTime();
+        if (Date.now() - lastActiveTime > HEARTBEAT_TIMEOUT_MS) {
+          console.log('[DEVICE-VERIFICATION] Primary device session is stale/inactive (heartbeat > 2m).');
+          return null;
+        }
+      }
+
+      return data as UserDevice;
     } catch {
       return null;
+    }
+  },
+
+  async getPrimaryDevice(userId: string, isSandboxMode: boolean): Promise<UserDevice | null> {
+    return this.getActivePrimaryDevice(userId, isSandboxMode);
+  },
+
+  async updateHeartbeat(userId: string, deviceId: string, isSandboxMode: boolean): Promise<void> {
+    if (!userId || !deviceId) return;
+    const nowIso = new Date().toISOString();
+
+    if (isSandboxMode) {
+      const devices = getSandboxDevices(userId);
+      const idx = devices.findIndex(d => d.device_id === deviceId || d.id === deviceId);
+      if (idx >= 0) {
+        devices[idx].last_active = nowIso;
+        saveSandboxDevices(userId, devices);
+      }
+      return;
+    }
+
+    try {
+      await supabase
+        .from('user_devices')
+        .update({ last_active: nowIso, updated_at: nowIso })
+        .eq('user_id', userId)
+        .eq('device_id', deviceId);
+    } catch (err) {
+      console.warn('[DEVICE-VERIFICATION] Heartbeat update warning:', err);
+    }
+  },
+
+  async promoteToPrimaryDevice(userId: string, deviceId: string, isSandboxMode: boolean): Promise<void> {
+    if (!userId || !deviceId) return;
+    const nowIso = new Date().toISOString();
+
+    if (isSandboxMode) {
+      const devices = getSandboxDevices(userId);
+      devices.forEach(d => {
+        if (d.device_id === deviceId || d.id === deviceId) {
+          d.is_primary = true;
+          d.is_revoked = false;
+          d.last_active = nowIso;
+        } else {
+          d.is_primary = false;
+        }
+      });
+      saveSandboxDevices(userId, devices);
+      return;
+    }
+
+    try {
+      // Step 1: Optimistic demote of any existing primary devices for this user
+      await supabase
+        .from('user_devices')
+        .update({ is_primary: false, updated_at: nowIso })
+        .eq('user_id', userId)
+        .eq('is_primary', true);
+
+      // Step 2: Set target device as Primary Device
+      await supabase
+        .from('user_devices')
+        .update({ is_primary: true, is_revoked: false, last_active: nowIso, updated_at: nowIso })
+        .eq('user_id', userId)
+        .eq('device_id', deviceId);
+    } catch (err) {
+      console.warn('[DEVICE-VERIFICATION] promoteToPrimaryDevice warning:', err);
+    }
+  },
+
+  async handleLogoutCleanup(userId: string, deviceId?: string, isSandboxMode?: boolean): Promise<void> {
+    if (!userId) return;
+    const oldTimeIso = '1970-01-01T00:00:00.000Z';
+
+    if (isSandboxMode) {
+      if (deviceId) {
+        const devices = getSandboxDevices(userId);
+        devices.forEach(d => {
+          if (d.device_id === deviceId || d.id === deviceId) {
+            d.is_primary = false;
+            d.is_revoked = true;
+            d.last_active = oldTimeIso;
+          }
+        });
+        saveSandboxDevices(userId, devices);
+      } else {
+        saveSandboxDevices(userId, []);
+      }
+      saveSandboxRequests(userId, []);
+      localStorage.removeItem(`${SANDBOX_QR_KEY}_${userId}`);
+      return;
+    }
+
+    try {
+      // 1. Mark device as non-primary, revoked, and clear heartbeat
+      if (deviceId) {
+        await supabase
+          .from('user_devices')
+          .update({
+            is_primary: false,
+            is_revoked: true,
+            last_active: oldTimeIso,
+            updated_at: new Date().toISOString()
+          })
+          .eq('user_id', userId)
+          .eq('device_id', deviceId);
+      } else {
+        await supabase
+          .from('user_devices')
+          .update({
+            is_primary: false,
+            is_revoked: true,
+            last_active: oldTimeIso,
+            updated_at: new Date().toISOString()
+          })
+          .eq('user_id', userId);
+      }
+
+      // 2. Revoke/expire pending login approval requests
+      await supabase
+        .from('device_login_requests')
+        .update({ status: 'expired' })
+        .eq('user_id', userId)
+        .eq('status', 'pending');
+
+      // 3. Remove/consume active QR sessions
+      await supabase
+        .from('qr_link_sessions')
+        .update({ status: 'consumed' })
+        .eq('user_id', userId)
+        .eq('status', 'active');
+    } catch (err) {
+      console.warn('[DEVICE-VERIFICATION] handleLogoutCleanup warning:', err);
     }
   },
 

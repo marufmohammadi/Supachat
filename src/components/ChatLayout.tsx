@@ -11,6 +11,8 @@ import E2EEKeyManager from './E2EEKeyManager';
 import { DisappearingOptionsModal, DisappearingSettings } from './disappearing/DisappearingOptionsModal';
 import { ViewOnceViewerModal } from './disappearing/ViewOnceViewerModal';
 import { CountdownTimer } from './disappearing/CountdownTimer';
+import { ProfilePageModal } from './ProfilePageModal';
+import { getDisplayName, getFormattedUsername } from '../utils/username';
 
 // WebRTC Calling System Imports
 import { PhoneCall, Phone, PhoneMissed, Video } from 'lucide-react';
@@ -335,6 +337,8 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
 
   // State Management
   const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [myProfile, setMyProfile] = useState<Profile | null>(null);
+  const [showProfileModal, setShowProfileModal] = useState(false);
   const [groups, setGroups] = useState<Group[]>([]);
   const [lastMessages, setLastMessages] = useState<{
     [chatId: string]: {
@@ -515,6 +519,13 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
         }
       ];
 
+      setMyProfile({
+        id: currentUserId,
+        username: currentUsername,
+        display_name: session?.user?.user_metadata?.display_name || currentUsername,
+        avatar_url: currentUserAvatar,
+        email: currentUserEmail
+      });
       setProfiles(mockProfiles);
       setGroups(mockGroups);
 
@@ -550,6 +561,16 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
     }
   }, [isSandboxMode]);
 
+  // Periodic background check to sweep expired messages and keep Chat List preview in sync
+  useEffect(() => {
+    if (isSandboxMode || !currentUserId) return;
+    const interval = setInterval(() => {
+      fetchLastMessages(groupsRef.current);
+      fetchUnreadCounts();
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [currentUserId, isSandboxMode]);
+
   const verifyDbWithRetries = async () => {
     setDbStatus('checking');
     const ok = await testSupabaseConnection();
@@ -578,6 +599,19 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
       }
       
       if (pData) {
+        const selfProfile = pData.find((u: Profile) => u.id === currentUserId);
+        if (selfProfile) {
+          setMyProfile(selfProfile);
+        } else if (currentUserId) {
+          setMyProfile({
+            id: currentUserId,
+            username: currentUsername,
+            display_name: session?.user?.user_metadata?.display_name || currentUsername,
+            avatar_url: currentUserAvatar,
+            email: currentUserEmail
+          });
+        }
+
         const hasMe = pData.some((u: Profile) => u.id === currentUserId);
         if (!hasMe && currentUserId) {
           // Current user is missing (probably because trigger hasn't fired yet or were created earlier). Direct fallback write:
@@ -755,6 +789,32 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
     }
   };
 
+  // Helper to validate if a message is active and valid for previews/counts
+  const isMessageValidForPreview = (msg: Message | any, userId: string): boolean => {
+    if (!msg) return false;
+    if (msg.destroyed_at) return false;
+    if (msg.status === 'expired') return false;
+    if (msg.expires_at && new Date(msg.expires_at).getTime() <= Date.now()) return false;
+
+    const isViewOnce = msg.view_once || msg.message_mode === 'view_once';
+    if (isViewOnce) {
+      if (msg.opened_at) return false;
+      let openedByList: string[] = [];
+      if (Array.isArray(msg.opened_by)) {
+        openedByList = msg.opened_by;
+      } else if (typeof msg.opened_by === 'string') {
+        try {
+          openedByList = JSON.parse(msg.opened_by);
+        } catch {
+          openedByList = [];
+        }
+      }
+      if (openedByList.includes(userId)) return false;
+    }
+
+    return true;
+  };
+
   // Fetch all unread counts for Direct and Group messages
   const fetchUnreadCounts = async () => {
     if (isSandboxMode || !currentUserId) return;
@@ -771,7 +831,7 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
       try {
         const res = await supabase
           .from('messages')
-          .select('sender_id')
+          .select('sender_id, destroyed_at, status, expires_at, view_once, message_mode, opened_at, opened_by')
           .eq('receiver_id', currentUserId)
           .or('status.neq.read,status.is.null');
         dmData = res.data;
@@ -785,11 +845,12 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
         // Fallback: If status column is missing or query fails, fetch direct messages and compare with client's last-read timestamp
         const { data: fallbackData, error: fallbackError } = await supabase
           .from('messages')
-          .select('sender_id, created_at')
+          .select('sender_id, created_at, destroyed_at, status, expires_at, view_once, message_mode, opened_at, opened_by')
           .eq('receiver_id', currentUserId);
 
         if (!fallbackError && fallbackData) {
           fallbackData.forEach((msg: any) => {
+            if (!isMessageValidForPreview(msg, currentUserId)) return;
             const lastReadTimeStr = localStorage.getItem(`whatsapp_last_read_direct_${currentUserId}_${msg.sender_id}`);
             const lastReadTime = lastReadTimeStr ? new Date(lastReadTimeStr).getTime() : 0;
             const msgTime = new Date(msg.created_at).getTime();
@@ -800,7 +861,9 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
         }
       } else if (dmData) {
         dmData.forEach((m: any) => {
-          counts[m.sender_id] = (counts[m.sender_id] || 0) + 1;
+          if (isMessageValidForPreview(m, currentUserId)) {
+            counts[m.sender_id] = (counts[m.sender_id] || 0) + 1;
+          }
         });
       }
 
@@ -843,13 +906,14 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
 
             const { data: groupMsgDesc } = await supabase
               .from('messages')
-              .select('id')
+              .select('id, destroyed_at, status, expires_at, view_once, message_mode, opened_at, opened_by')
               .eq('group_id', member.group_id)
               .neq('sender_id', currentUserId)
               .gt('created_at', lastReadTime);
 
             if (groupMsgDesc) {
-              counts[member.group_id] = groupMsgDesc.length;
+              const validGroupMsgs = groupMsgDesc.filter((m: any) => isMessageValidForPreview(m, currentUserId));
+              counts[member.group_id] = validGroupMsgs.length;
             }
           } catch (mErr) {
             console.warn('Failed tracking unread for group:', member.group_id, mErr);
@@ -974,9 +1038,34 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
   };
 
   const fetchLastMessages = async (joinedGroups: Group[]) => {
-    if (isSandboxMode || !currentUserId) return;
+    if (isSandboxMode) {
+      if (activeChat) {
+        const valid = messages.filter(m => isMessageValidForPreview(m, currentUserId));
+        if (valid.length > 0) {
+          const last = valid[valid.length - 1];
+          decryptPreviewText(last).then(text => {
+            setLastMessages(prev => ({
+              ...prev,
+              [activeChat.id]: {
+                text,
+                created_at: last.created_at,
+                is_encrypted: last.is_encrypted
+              }
+            }));
+          });
+        } else {
+          setLastMessages(prev => {
+            const next = { ...prev };
+            delete next[activeChat.id];
+            return next;
+          });
+        }
+      }
+      return;
+    }
+    if (!currentUserId) return;
     try {
-      const groupIds = joinedGroups.map(g => g.id);
+      const groupIds = (joinedGroups || []).map(g => g.id);
       let orFilter = `sender_id.eq.${currentUserId},receiver_id.eq.${currentUserId}`;
       if (groupIds.length > 0) {
         orFilter += `,group_id.in.(${groupIds.join(',')})`;
@@ -998,6 +1087,8 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
         const decryptPromises: Promise<any>[] = [];
         
         data.forEach((msg: Message) => {
+          if (!isMessageValidForPreview(msg, currentUserId)) return;
+
           const chatId = msg.group_id || (msg.sender_id === currentUserId ? msg.receiver_id : msg.sender_id);
           if (chatId && !map[chatId]) {
             map[chatId] = msg;
@@ -1341,43 +1432,47 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
                 }
               }
             }
-          } else if (payload.eventType === 'UPDATE') {
-            const updatedMsg = payload.new as Message;
-            if (!updatedMsg) return;
+          } else if (payload.eventType === 'UPDATE' || payload.eventType === 'DELETE') {
+            if (payload.eventType === 'DELETE') {
+              const deletedId = (payload.old as any)?.id;
+              if (deletedId) {
+                setMessages(prev => prev.filter(m => m.id !== deletedId));
+              }
+            }
+            if (payload.eventType === 'UPDATE') {
+              const updatedMsg = payload.new as Message;
+              if (updatedMsg) {
+                console.log('[AUDIT] Realtime status UPDATE received: message ID:', updatedMsg.id, 'updated status is:', updatedMsg.status);
 
-            // Realtime status event logger
-            console.log('[AUDIT] Realtime status UPDATE received: message ID:', updatedMsg.id, 'updated status is:', updatedMsg.status);
-
-            // Since replica identity may omit unmodified columns during update events,
-            // we merge only status/timestamp fields to avoid overwriting valid metadata with nulls.
-            // We also support resolving optimistic placeholders to prevent race conditions.
-            setMessages(prev => {
-              const exists = prev.some(m => m.id === updatedMsg.id || (m.id.startsWith('opt-') && m.encrypted_body === updatedMsg.encrypted_body));
-              if (exists) {
-                return prev.map(m => {
-                  const match = m.id === updatedMsg.id || (m.id.startsWith('opt-') && m.encrypted_body === updatedMsg.encrypted_body);
-                  if (match) {
-                    return {
-                      ...m,
-                      id: updatedMsg.id, // Adopts actual UUID
-                      status: updatedMsg.status || m.status,
-                      delivered_at: updatedMsg.delivered_at || m.delivered_at,
-                      read_at: updatedMsg.read_at || m.read_at,
-                      opened_at: updatedMsg.opened_at || m.opened_at,
-                      opened_by: updatedMsg.opened_by || m.opened_by,
-                      destroyed_at: updatedMsg.destroyed_at || m.destroyed_at,
-                      expires_at: updatedMsg.expires_at || m.expires_at,
-                      view_once: updatedMsg.view_once !== undefined ? updatedMsg.view_once : m.view_once,
-                      message_mode: updatedMsg.message_mode || m.message_mode,
-                    };
+                setMessages(prev => {
+                  const exists = prev.some(m => m.id === updatedMsg.id || (m.id.startsWith('opt-') && m.encrypted_body === updatedMsg.encrypted_body));
+                  if (exists) {
+                    return prev.map(m => {
+                      const match = m.id === updatedMsg.id || (m.id.startsWith('opt-') && m.encrypted_body === updatedMsg.encrypted_body);
+                      if (match) {
+                        return {
+                          ...m,
+                          id: updatedMsg.id, // Adopts actual UUID
+                          status: updatedMsg.status || m.status,
+                          delivered_at: updatedMsg.delivered_at || m.delivered_at,
+                          read_at: updatedMsg.read_at || m.read_at,
+                          opened_at: updatedMsg.opened_at || m.opened_at,
+                          opened_by: updatedMsg.opened_by || m.opened_by,
+                          destroyed_at: updatedMsg.destroyed_at || m.destroyed_at,
+                          expires_at: updatedMsg.expires_at || m.expires_at,
+                          view_once: updatedMsg.view_once !== undefined ? updatedMsg.view_once : m.view_once,
+                          message_mode: updatedMsg.message_mode || m.message_mode,
+                        };
+                      }
+                      return m;
+                    });
                   }
-                  return m;
+                  return prev;
                 });
               }
-              return prev;
-            });
-            
-            // Re-fetch counts when delivery or read statuses change across the system
+            }
+
+            fetchLastMessages(groupsRef.current);
             fetchUnreadCounts();
           }
         }
@@ -1862,7 +1957,10 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
     setViewOnceActiveMsg(null);
     setViewOnceDecryptedText('');
 
-    if (isSandboxMode) return;
+    if (isSandboxMode) {
+      fetchLastMessages(groupsRef.current);
+      return;
+    }
 
     try {
       const existingOpenedBy = Array.isArray(msg.opened_by) ? msg.opened_by : [];
@@ -1877,6 +1975,9 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
           status: 'read'
         })
         .eq('id', msg.id);
+
+      fetchLastMessages(groupsRef.current);
+      fetchUnreadCounts();
     } catch (err) {
       console.warn('Could not update destroyed view once state in db:', err);
     }
@@ -1887,7 +1988,10 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
 
     setMessages(prev => prev.filter(m => m.id !== msgId));
 
-    if (isSandboxMode) return;
+    if (isSandboxMode) {
+      fetchLastMessages(groupsRef.current);
+      return;
+    }
 
     try {
       await supabase
@@ -1897,26 +2001,16 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
           destroyed_at: now
         })
         .eq('id', msgId);
+
+      fetchLastMessages(groupsRef.current);
+      fetchUnreadCounts();
     } catch (err) {
       console.warn('Could not mark message as expired in db:', err);
     }
   };
 
   // Filter messages for rendering (exclude destroyed, expired, and opened view once messages)
-  const visibleMessages = messages.filter(msg => {
-    if (msg.destroyed_at) return false;
-    if (msg.expires_at && new Date(msg.expires_at).getTime() <= Date.now()) return false;
-
-    const isViewOnce = msg.view_once || msg.message_mode === 'view_once';
-    const openedByList = Array.isArray(msg.opened_by) ? msg.opened_by : [];
-
-    if (isViewOnce) {
-      if (openedByList.includes(currentUserId)) return false;
-      if (msg.sender_id !== currentUserId && msg.opened_at) return false;
-    }
-
-    return true;
-  });
+  const visibleMessages = messages.filter(msg => isMessageValidForPreview(msg, currentUserId));
 
   // Decrypts individual message client-side
   const getRenderableMessageContent = async (msg: Message): Promise<string> => {
@@ -2214,24 +2308,22 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
         
         {/* Sidebar Header */}
         <div className="h-[64px] bg-[#202c33] px-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
+          <div 
+            onClick={() => setShowProfileModal(true)} 
+            className="flex items-center gap-3 cursor-pointer hover:opacity-90 transition-opacity"
+            title="Click to view & edit your profile"
+          >
             <img 
-              src={currentUserAvatar} 
+              src={myProfile?.avatar_url || currentUserAvatar} 
               alt="My Avatar" 
-              className="w-10 h-10 rounded-full border border-gray-700/50 bg-[#1f2c34]"
+              className="w-10 h-10 rounded-full border border-emerald-500/30 bg-[#1f2c34]"
             />
             <div className="text-left -space-y-0.5">
-              <div id="username-display" className="text-sm font-semibold text-white truncate max-w-[140px]">{currentUsername}</div>
-              <div className="text-[10px] text-emerald-400 flex items-center gap-1 font-mono">
-                {isSandboxMode ? (
-                  <>
-                    <Sparkles className="w-2.5 h-2.5" /> Demo Sandbox
-                  </>
-                ) : (
-                  <>
-                    <Globe className="w-2.5 h-2.5" /> Real Supabase
-                  </>
-                )}
+              <div id="username-display" className="text-sm font-semibold text-white truncate max-w-[140px]">
+                {getDisplayName(myProfile, currentUsername)}
+              </div>
+              <div className="text-[10px] text-emerald-400 font-mono truncate max-w-[140px]">
+                {getFormattedUsername(myProfile, currentUsername)}
               </div>
             </div>
           </div>
@@ -2249,15 +2341,6 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
               {!hasE2EEKeys && (
                 <span className="absolute top-1 right-1 w-2 h-2 bg-amber-400 rounded-full animate-pulse" />
               )}
-            </button>
-
-            <button
-              id="open-db-config-sidebar-btn"
-              onClick={onOpenDbSetup}
-              title="View SQL Schemas"
-              className="p-2 text-gray-400 hover:text-white rounded-full cursor-pointer hover:bg-gray-700/60 transition-colors"
-            >
-              <Database className="w-4 h-4" />
             </button>
 
             {/* Linked Devices Trigger */}
@@ -2302,27 +2385,14 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
         {dbStatus === 'error' && (
           <div className="m-3 p-3 bg-rose-500/15 border border-rose-500/20 rounded-xl space-y-2 text-left">
             <div className="flex gap-2 items-center text-rose-300 text-xs font-semibold">
-              <AlertCircle className="w-4 h-4" /> {dbErrorString?.toLowerCase().includes('failed to fetch') ? 'Database Connection Unreachable' : 'Database Sync Blocked'}
+              <AlertCircle className="w-4 h-4" /> {dbErrorString?.toLowerCase().includes('failed to fetch') ? 'Network Unreachable' : 'Sync Offline'}
             </div>
             <p className="text-[11px] text-rose-200/90 leading-relaxed">
               {dbErrorString?.toLowerCase().includes('failed to fetch')
-                ? 'Unable to connect to the cloud database (Failed to fetch). This is usually caused by ad-blockers (like Brave or uBlock Origin) blocking third-party Supabase connections, or lack of internet.'
-                : 'Required profiles / messages tables. Create them with the setup guide.'
+                ? 'Unable to connect to the cloud network. Please check your internet connection.'
+                : 'Unable to sync database contacts. Please retry in a moment.'
               }
             </p>
-            {dbErrorString?.toLowerCase().includes('failed to fetch') ? (
-              <p className="text-[10px] text-gray-400 font-sans leading-relaxed">
-                💡 Try turning off ad-blockers for this tab, or sign out and enter the <b>Interactive Demo Sandbox</b> mode for a full offline experience.
-              </p>
-            ) : (
-              <button
-                id="sidebar-troubleshoot-btn"
-                onClick={onOpenDbSetup}
-                className="w-full py-1 px-2.5 bg-rose-500 hover:bg-rose-600 text-white rounded text-[10px] font-bold transition-all cursor-pointer"
-              >
-                Open SQL Console Guide
-              </button>
-            )}
           </div>
         )}
 
@@ -2395,7 +2465,14 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
                 <span className="text-[10px] font-bold text-gray-500 uppercase px-2 tracking-wider">Direct Channels</span>
                 <div className="space-y-1 mt-2">
                   {sortedProfiles
-                    .filter(p => !searchQuery || p.username.toLowerCase().includes(searchQuery.toLowerCase()))
+                    .filter(p => {
+                      if (!searchQuery) return true;
+                      const q = searchQuery.toLowerCase().replace(/^@/, '').trim();
+                      const nameMatch = (p.display_name || '').toLowerCase().includes(q);
+                      const userMatch = (p.username || '').toLowerCase().includes(q);
+                      const emailMatch = (p.email || '').toLowerCase().includes(q);
+                      return nameMatch || userMatch || emailMatch;
+                    })
                     .map(profile => {
                       const isActive = activeChat?.type === 'direct' && activeChat.id === profile.id;
                       const targetHasKeys = !!profile.public_key;
@@ -2411,7 +2488,7 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
                           <div className="relative">
                             <img 
                               src={profile.avatar_url || `https://api.dicebear.com/7.x/adventurer/svg?seed=${profile.username}`} 
-                              alt={profile.username} 
+                              alt={getDisplayName(profile)} 
                               className="w-10 h-10 rounded-full bg-slate-800"
                             />
                             <span className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-[#111b21] ${
@@ -2421,7 +2498,9 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
 
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center justify-between gap-1">
-                              <h5 className="text-xs font-semibold truncate text-[#f0f2f5] flex-1">{profile.username}</h5>
+                              <h5 className="text-xs font-semibold truncate text-[#f0f2f5] flex-1">
+                                {getDisplayName(profile)}
+                              </h5>
                               <div className="flex items-center gap-1.5 shrink-0">
                                 {lastMessages[profile.id] && (
                                   <span className="text-[9px] text-gray-500 font-mono">
@@ -2437,10 +2516,10 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
                             </div>
                             <div className="flex items-center justify-between mt-0.5">
                               <p className="text-[10px] text-gray-400 truncate font-sans max-w-[80%]">
-                                {lastMessages[profile.id] ? (
+                                {lastMessages[profile.id]?.text ? (
                                   formatCallEventPreview(lastMessages[profile.id].text, currentUserId)
                                 ) : (
-                                  targetHasKeys ? 'RSA-2048 Channel Active' : 'No public catalog yet'
+                                  'No messages yet'
                                 )}
                               </p>
                               {unreadCounts[profile.id] > 0 && (
@@ -2497,10 +2576,10 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
                             </div>
                             <div className="flex items-center justify-between mt-0.5">
                               <p className="text-[10px] text-gray-400 truncate font-sans max-w-[80%]">
-                                {lastMessages[group.id] ? (
+                                {lastMessages[group.id]?.text ? (
                                   formatCallEventPreview(lastMessages[group.id].text, currentUserId)
                                 ) : (
-                                  'Group Chat Room'
+                                  'No messages yet'
                                 )}
                               </p>
                               {unreadCounts[group.id] > 0 && (
@@ -2550,24 +2629,45 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
                 className="w-10 h-10 rounded-full bg-slate-800 border border-gray-700/50"
               />
               <div className="text-left leading-tight">
-                <h4 className="text-sm font-semibold text-white truncate max-w-[150px] sm:max-w-[200px] md:max-w-[400px]">
-                  {(targetInfo as any).username || (targetInfo as any).name}
-                </h4>
-                {activeTypingNames.length > 0 ? (
-                  <p className="text-[10px] text-emerald-400 flex items-center gap-1.5 mt-0.5 font-medium animate-pulse">
-                    <span className="flex gap-0.5 items-center">
-                      <span className="w-1 h-1 bg-emerald-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                      <span className="w-1 h-1 bg-emerald-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                      <span className="w-1 h-1 bg-emerald-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-                    </span>
-                    <span className="truncate max-w-[120px] sm:max-w-[200px]">
-                      {activeTypingNames.join(', ')} {activeTypingNames.length === 1 ? 'is' : 'are'} typing...
-                    </span>
-                  </p>
+                {activeChat.type === 'direct' ? (
+                  <>
+                    <h4 className="text-sm font-semibold text-white truncate max-w-[150px] sm:max-w-[200px] md:max-w-[400px]">
+                      {getDisplayName(targetInfo)}
+                    </h4>
+                    {activeTypingNames.length > 0 ? (
+                      <p className="text-[10px] text-emerald-400 flex items-center gap-1.5 mt-0.5 font-medium animate-pulse">
+                        <span className="flex gap-0.5 items-center">
+                          <span className="w-1 h-1 bg-emerald-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                          <span className="w-1 h-1 bg-emerald-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                          <span className="w-1 h-1 bg-emerald-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                        </span>
+                        <span className="truncate max-w-[120px] sm:max-w-[200px]">
+                          {activeTypingNames.join(', ')} typing...
+                        </span>
+                      </p>
+                    ) : (
+                      <p className="text-[10px] text-emerald-400/85 flex items-center gap-1 mt-0.5 font-mono">
+                        <span>{getFormattedUsername(targetInfo)}</span> • <Lock className="w-2.5 h-2.5 inline" /> E2EE Active
+                      </p>
+                    )}
+                  </>
                 ) : (
-                  <p className="text-[10px] text-emerald-400/85 flex items-center gap-1 mt-0.5 font-mono">
-                    <Lock className="w-2.5 h-2.5" /> End-to-End Encrypted
-                  </p>
+                  <>
+                    <h4 className="text-sm font-semibold text-white truncate max-w-[150px] sm:max-w-[200px] md:max-w-[400px]">
+                      {(targetInfo as any).name}
+                    </h4>
+                    {activeTypingNames.length > 0 ? (
+                      <p className="text-[10px] text-emerald-400 flex items-center gap-1.5 mt-0.5 font-medium animate-pulse">
+                        <span className="truncate max-w-[120px] sm:max-w-[200px]">
+                          {activeTypingNames.join(', ')} typing...
+                        </span>
+                      </p>
+                    ) : (
+                      <p className="text-[10px] text-emerald-400/85 flex items-center gap-1 mt-0.5 font-mono">
+                        <Lock className="w-2.5 h-2.5" /> End-to-End Encrypted Group
+                      </p>
+                    )}
+                  </>
                 )}
               </div>
             </div>
@@ -2630,7 +2730,7 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
             {/* Encryption Welcome Bubble */}
             <div className="max-w-md mx-auto text-center sticky top-2 z-10">
               <div className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#182229] border border-gray-800 rounded-full text-[10px] text-amber-300 font-mono shadow-md backdrop-blur">
-                <Lock className="w-3 h-3 text-emerald-400" /> WhatsApp E2EE Secure Room Connection Active
+                <Lock className="w-3 h-3 text-emerald-400" /> SupaChat E2EE Secure Room Connection Active
               </div>
             </div>
 
@@ -2937,7 +3037,7 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
             <div className="inline-flex items-center justify-center w-16 h-16 bg-[#00a884]/15 rounded-2xl text-[#00a884] mb-2 animate-pulse">
               <ShieldCheck className="w-10 h-10" />
             </div>
-            <h3 className="text-xl font-bold text-white tracking-tight">WhatsApp Encrypted Workspace</h3>
+            <h3 className="text-xl font-bold text-white tracking-tight">SupaChat Encrypted Workspace</h3>
             <p className="text-xs text-gray-400 leading-relaxed">
               Activate real-time chats with client-side keys. Choose or trigger an active direct chat room from the sidebar left-side panel to begin the E2EE transcripts log.
             </p>
@@ -3049,9 +3149,9 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
                       key={p.id}
                       className="flex items-center justify-between p-1.5 hover:bg-gray-800/40 rounded-lg cursor-pointer text-xs select-none"
                     >
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
                         <img src={p.avatar_url} alt="" className="w-6 h-6 rounded-full bg-slate-800" />
-                        <span>{p.username}</span>
+                        <span className="truncate">{getDisplayName(p)} <span className="text-[10px] text-emerald-400/80 font-mono">({getFormattedUsername(p)})</span></span>
                       </div>
                       <input
                         type="checkbox"
@@ -3118,9 +3218,9 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
                       className="w-full p-2 bg-[#2a3942] hover:bg-gray-700/40 border border-gray-700 rounded-xl text-xs text-left flex items-center gap-2.5 transition-colors cursor-pointer"
                     >
                       <img src={p.avatar_url} alt="" className="w-6 h-6 rounded-full bg-slate-800" />
-                      <div className="flex-1">
-                        <div className="font-semibold text-white">{p.username}</div>
-                        <div className="text-[10px] text-emerald-400 font-mono">E2EE Key Registered</div>
+                      <div className="flex-1 min-w-0">
+                        <div className="font-semibold text-white truncate">{getDisplayName(p)}</div>
+                        <div className="text-[10px] text-emerald-400 font-mono truncate">{getFormattedUsername(p)}</div>
                       </div>
                     </button>
                   ))}
@@ -3140,9 +3240,9 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
                     >
                       <img src={p.avatar_url} alt="" className="w-6 h-6 rounded-full bg-slate-800" />
                       <div className="flex-1 min-w-0">
-                        <div className="text-xs font-semibold text-white truncate">{p.username}</div>
-                        <div className="text-[10px] text-gray-400 font-mono truncate">
-                          {p.public_key ? '🔐 RSA-OAEP ready' : '❌ Key not generated yet'}
+                        <div className="text-xs font-semibold text-white truncate">{getDisplayName(p)}</div>
+                        <div className="text-[10px] text-emerald-400 font-mono truncate">
+                          {getFormattedUsername(p)} • {p.public_key ? '🔐 RSA-OAEP ready' : '❌ Key not generated'}
                         </div>
                       </div>
                     </button>
@@ -3150,30 +3250,17 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
 
                   {dbErrorString && (
                     <div className="p-3 bg-rose-500/10 border border-rose-500/20 text-rose-300 text-[10px] rounded-lg leading-relaxed text-left space-y-1">
-                      <p className="font-semibold">⚠️ Schema check warning:</p>
-                      <p className="font-mono text-[9px] truncate bg-black/30 p-1 rounded">{dbErrorString}</p>
-                      <p className="text-gray-400 mt-1">
-                        If the <b>profiles</b> table is missing columns, please re-run the updated SQL setup script to add them.
+                      <p className="font-semibold">⚠️ Connection notice:</p>
+                      <p className="text-gray-400">
+                        Could not load user profiles. Please check your network connection and try again.
                       </p>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowNewDirectChatModal(false);
-                          onOpenDbSetup();
-                        }}
-                        className="text-emerald-400 font-bold hover:underline block mt-1 cursor-pointer"
-                      >
-                        👉 Open SQL Editor Script
-                      </button>
                     </div>
                   )}
 
                   {profiles.length === 0 && !dbErrorString && (
                     <div className="text-center py-4 space-y-3">
                       <p className="text-[11px] text-gray-400 leading-relaxed text-left bg-black/20 p-2.5 rounded-lg">
-                        💡 <b>Why are no users appearing?</b> Если таблицы были созданы <i>после</i> регистрации аккаунтов, Ваши pre-existing пользователи не были скопированы автоматически.
-                        <br /><br />
-                        Please open the database console, copy the latest script, and run it in the Supabase SQL Editor. It includes a <b>BACKFILL</b> section at the end to map existing accounts into chat contacts immediately!
+                        💡 <b>No contacts found yet.</b> Search for users by entering their username above, or invite a friend to create an account.
                       </p>
                       <div className="flex flex-col gap-2 pt-1">
                         <button
@@ -3182,17 +3269,7 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
                           onClick={fetchRealProfilesAndGroups}
                           className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#202c33] hover:bg-gray-800/50 border border-gray-700 text-[11px] font-semibold text-[#00a884] hover:text-[#00cfa2] rounded-lg transition-colors cursor-pointer mx-auto"
                         >
-                          🔄 Fetch & Sync Database Contacts
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setShowNewDirectChatModal(false);
-                            onOpenDbSetup();
-                          }}
-                          className="text-[11px] font-semibold text-emerald-400 hover:underline cursor-pointer"
-                        >
-                          Show SQL Script for Backfill & Sync
+                          🔄 Refresh Contacts List
                         </button>
                       </div>
                     </div>
@@ -3558,6 +3635,19 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
           onCloseAndDestroy={() => handleDestroyViewOnce(viewOnceActiveMsg)}
         />
       )}
+
+      {/* User Profile Page Modal */}
+      <ProfilePageModal
+        isOpen={showProfileModal}
+        onClose={() => setShowProfileModal(false)}
+        currentProfile={myProfile}
+        currentUserId={currentUserId}
+        isSandboxMode={isSandboxMode}
+        onProfileUpdated={(updated) => {
+          setMyProfile(updated);
+          setProfiles(prev => prev.map(p => p.id === updated.id ? updated : p));
+        }}
+      />
     </div>
   );
 }
