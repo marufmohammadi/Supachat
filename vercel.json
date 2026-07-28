@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "headers": [
+    {
+      "source": "/(icon-.*\\.png|manifest\\.json|sw\\.js)",
+      "headers": [
+        { "key": "Access-Control-Allow-Origin", "value": "*" },
+        { "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }
+      ]
+    },
+    {
+      "source": "/sw.js",
+      "headers": [
+        { "key": "Access-Control-Allow-Origin", "value": "*" },
+        { "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" },
+        { "key": "Service-Worker-Allowed", "value": "/" }
+      ]
+    }
+  ],
+  "rewrites": [
+    { "source": "/icon-192.png", "destination": "/icon-192.png" },
+    { "source": "/icon-512.png", "destination": "/icon-512.png" },
+    { "source": "/icon-maskable-192.png", "destination": "/icon-maskable-192.png" },
+    { "source": "/icon-maskable-512.png", "destination": "/icon-maskable-512.png" },
+    { "source": "/manifest.json", "destination": "/manifest.json" },
+    { "source": "/sw.js", "destination": "/sw.js" },
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
+}

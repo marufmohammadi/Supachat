@@ -59,7 +59,7 @@ self.addEventListener('fetch', (event) => {
         if (
           networkResponse &&
           networkResponse.status === 200 &&
-          networkResponse.type === 'basic' &&
+          (networkResponse.type === 'basic' || networkResponse.type === 'cors') &&
           !url.pathname.includes('/api/')
         ) {
           const responseToCache = networkResponse.clone();
