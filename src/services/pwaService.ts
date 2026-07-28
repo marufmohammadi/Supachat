@@ -33,12 +33,15 @@ class PWAService {
       e.preventDefault();
       this.deferredInstallPrompt = e;
       this.notifyInstallableSubscribers(true);
+      console.log('[PWA Audit] beforeinstallprompt fired: true');
+      console.log('[PWA Audit] App installable: true');
     });
 
     window.addEventListener('appinstalled', () => {
       this.deferredInstallPrompt = null;
       this.isInstalled = true;
       this.notifyInstallableSubscribers(false);
+      console.log('[PWA Audit] App installed successfully');
     });
   }
 
@@ -78,10 +81,37 @@ class PWAService {
     }
   }
 
+  // Audit and log PWA installation criteria at startup
+  public async auditAndLogPWAStatus(): Promise<void> {
+    const manifestLink = document.querySelector('link[rel="manifest"]');
+    const isManifestDetected = !!manifestLink;
+    
+    let swStatus = 'Not Supported';
+    if ('serviceWorker' in navigator) {
+      if (navigator.serviceWorker.controller) {
+        swStatus = 'Active & Controlling Page';
+      } else {
+        const reg = await navigator.serviceWorker.getRegistration();
+        if (reg?.active) {
+          swStatus = 'Active (Page uncontrolled until first refresh or client claim)';
+        } else if (reg?.installing || reg?.waiting) {
+          swStatus = 'Installing / Waiting';
+        } else {
+          swStatus = 'Unregistered';
+        }
+      }
+    }
+
+    console.log('[PWA Audit] Manifest detected:', isManifestDetected);
+    console.log('[PWA Audit] Service Worker status:', swStatus);
+    console.log('[PWA Audit] beforeinstallprompt fired:', !!this.deferredInstallPrompt);
+    console.log('[PWA Audit] App installable:', this.isAppInstallable());
+  }
+
   // Register Service Worker
   public async registerServiceWorker(): Promise<ServiceWorkerRegistration | null> {
     if (!('serviceWorker' in navigator)) {
-      console.info('Service Worker not supported in this environment');
+      console.info('[PWA Audit] Service Worker not supported in this environment');
       return null;
     }
 
@@ -89,21 +119,28 @@ class PWAService {
       const reg = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
       this.swRegistration = reg;
 
+      await navigator.serviceWorker.ready;
+
       // Handle SW updates
       reg.addEventListener('updatefound', () => {
         const newWorker = reg.installing;
         if (newWorker) {
           newWorker.addEventListener('statechange', () => {
             if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
-              console.log('New PWA service worker version available');
+              console.log('[PWA Audit] New PWA service worker version available');
             }
           });
         }
       });
 
+      // Execute PWA Audit log after SW registration & ready
+      setTimeout(() => {
+        this.auditAndLogPWAStatus().catch(() => {});
+      }, 300);
+
       return reg;
     } catch (err) {
-      console.warn('Service worker registration failed:', err);
+      console.warn('[PWA Audit] Service worker registration failed:', err);
       return null;
     }
   }
