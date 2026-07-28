@@ -2,8 +2,9 @@ import { useState, useEffect, useRef, FormEvent } from 'react';
 import { 
   Search, Send, Lock, Plus, Users, ShieldCheck, CheckCheck, Check, LogOut, 
   Database, UserCheck, Key, Shield, AlertCircle, Info, Sparkles, Archive, Image, FileText, Globe, ArrowLeft, Mic, Laptop, Eye, Clock, Timer, CheckCircle, MessageSquare, UserPlus,
-  MoreVertical, Settings, Star, Bell, Palette, HelpCircle
+  MoreVertical, Settings, Star, Bell, Palette, HelpCircle, Smartphone, Download
 } from 'lucide-react';
+import { pwaService } from '../services/pwaService';
 import { useDeviceVerification, LinkedDevicesModal, LoginApprovalModal } from '../features/device-verification';
 import { supabase, testSupabaseConnection } from '../lib/supabase';
 import { encryptMessage, decryptMessage, importPublicKey } from '../lib/crypto';
@@ -359,6 +360,8 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
   const [navTab, setNavTab] = useState<'chats' | 'groups' | 'global' | 'calls'>('chats');
   const [showOverflowMenu, setShowOverflowMenu] = useState(false);
   const overflowMenuRef = useRef<HTMLDivElement>(null);
+  const [isInstallable, setIsInstallable] = useState(false);
+  const [isStandalone, setIsStandalone] = useState(pwaService.isInstalled);
   const [showKeyManager, setShowKeyManager] = useState(false);
   const [showNewGroupModal, setShowNewGroupModal] = useState(false);
   const [showNewDirectChatModal, setShowNewDirectChatModal] = useState(false);
@@ -452,6 +455,40 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
       document.removeEventListener('mousedown', handleClickOutside);
     };
   }, [showOverflowMenu]);
+
+  // PWA & Web Push Initialization
+  useEffect(() => {
+    const unsubscribeInstall = pwaService.subscribeInstallableChange((installable) => {
+      setIsInstallable(installable);
+      setIsStandalone(pwaService.checkStandaloneMode());
+    });
+
+    if (currentUserId && !isSandboxMode) {
+      pwaService.setupPushNotifications(currentUserId, currentDeviceRecord?.device_id || 'primary_device')
+        .catch(err => console.warn('PWA Push setup warning:', err));
+    }
+
+    const handleSWMessage = (event: MessageEvent) => {
+      if (!event.data) return;
+      const { type, chatId, chatType } = event.data;
+      if (type === 'NAVIGATE_CHAT' && chatId) {
+        setActiveChat({ type: chatType || 'direct', id: chatId });
+      } else if (type === 'BACKGROUND_SYNC_TRIGGER') {
+        pwaService.registerBackgroundSync('pending-messages-sync');
+      }
+    };
+
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('message', handleSWMessage);
+    }
+
+    return () => {
+      unsubscribeInstall();
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.removeEventListener('message', handleSWMessage);
+      }
+    };
+  }, [currentUserId, isSandboxMode, currentDeviceRecord?.device_id]);
 
   // Real-time group call detector for current group chat
   useEffect(() => {
@@ -2453,6 +2490,24 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
                 
                 {/* Section 1: Security & Keys */}
                 <div className="py-1 px-1">
+                  {/* PWA Install Button when available */}
+                  {isInstallable && (
+                    <button
+                      id="menu-pwa-install"
+                      onClick={async () => {
+                        setShowOverflowMenu(false);
+                        await pwaService.promptInstall();
+                      }}
+                      className="w-full px-3 py-2 text-xs font-semibold bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 rounded-lg flex items-center justify-between transition-colors cursor-pointer text-left my-0.5 border border-emerald-500/30"
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <Smartphone className="w-4 h-4 text-emerald-400 shrink-0" />
+                        <span>Install SupaChat App</span>
+                      </div>
+                      <Download className="w-3.5 h-3.5 text-emerald-400 animate-bounce" />
+                    </button>
+                  )}
+
                   <button
                     id="menu-encryption-keys"
                     onClick={() => {

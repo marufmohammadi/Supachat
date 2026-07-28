@@ -728,5 +728,39 @@ BEGIN
   END IF;
 END $$;
 
+-- 14. PUSH SUBSCRIPTIONS TABLE FOR PWA WEB PUSH
+CREATE TABLE IF NOT EXISTS public.push_subscriptions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE NOT NULL,
+  device_id TEXT,
+  endpoint TEXT NOT NULL,
+  p256dh TEXT NOT NULL,
+  auth TEXT NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+  UNIQUE(user_id, endpoint)
+);
+
+CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user_id ON public.push_subscriptions(user_id);
+
+ALTER TABLE public.push_subscriptions ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users manage own push subscriptions" ON public.push_subscriptions;
+CREATE POLICY "Users manage own push subscriptions" ON public.push_subscriptions
+  FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+
+GRANT ALL ON public.push_subscriptions TO postgres, anon, authenticated, service_role;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' 
+      AND schemaname = 'public' 
+      AND tablename = 'push_subscriptions'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.push_subscriptions;
+  END IF;
+END $$;
 
 `;
