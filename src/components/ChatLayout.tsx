@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, FormEvent } from 'react';
 import { 
   Search, Send, Lock, Plus, Users, ShieldCheck, CheckCheck, Check, LogOut, 
-  Database, UserCheck, Key, Shield, AlertCircle, Info, Sparkles, Archive, Image, FileText, Globe, ArrowLeft, Mic, Laptop, Eye, Clock, Timer, CheckCircle
+  Database, UserCheck, Key, Shield, AlertCircle, Info, Sparkles, Archive, Image, FileText, Globe, ArrowLeft, Mic, Laptop, Eye, Clock, Timer, CheckCircle, MessageSquare, UserPlus,
+  MoreVertical, Settings, Star, Bell, Palette, HelpCircle
 } from 'lucide-react';
 import { useDeviceVerification, LinkedDevicesModal, LoginApprovalModal } from '../features/device-verification';
 import { supabase, testSupabaseConnection } from '../lib/supabase';
@@ -355,6 +356,9 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
   const [walkieTalkieConfirmGroupId, setWalkieTalkieConfirmGroupId] = useState<string | null>(null);
   
   // UI States
+  const [navTab, setNavTab] = useState<'chats' | 'groups' | 'global' | 'calls'>('chats');
+  const [showOverflowMenu, setShowOverflowMenu] = useState(false);
+  const overflowMenuRef = useRef<HTMLDivElement>(null);
   const [showKeyManager, setShowKeyManager] = useState(false);
   const [showNewGroupModal, setShowNewGroupModal] = useState(false);
   const [showNewDirectChatModal, setShowNewDirectChatModal] = useState(false);
@@ -431,6 +435,23 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
   useEffect(() => {
     activeChatRef.current = activeChat;
   }, [activeChat]);
+
+  // Click outside listener for WhatsApp overflow menu
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (overflowMenuRef.current && !overflowMenuRef.current.contains(event.target as Node)) {
+        setShowOverflowMenu(false);
+      }
+    };
+    if (showOverflowMenu) {
+      document.addEventListener('mousedown', handleClickOutside);
+    } else {
+      document.removeEventListener('mousedown', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showOverflowMenu]);
 
   // Real-time group call detector for current group chat
   useEffect(() => {
@@ -2369,6 +2390,19 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
     return a.name.localeCompare(b.name);
   });
 
+  // Active direct profiles that HAVE messages (or are currently open)
+  const activeDirectProfiles = sortedProfiles.filter(p => Boolean(lastMessages[p.id]) || (activeChat?.type === 'direct' && activeChat.id === p.id && messages.length > 0));
+
+  // Calculates unread badges for the bottom navigation bar
+  const unreadDirectCount = activeDirectProfiles.reduce((sum, p) => sum + (unreadCounts[p.id] || 0), 0);
+  const unreadGroupsCount = groups.reduce((sum, g) => sum + (unreadCounts[g.id] || 0), 0);
+  const totalChatsUnread = unreadDirectCount + unreadGroupsCount;
+
+  const missedCallsCount = callHistory.filter(c => {
+    const isIncoming = c.receiver_id === currentUserId || c.caller_id !== currentUserId;
+    return isIncoming && (c.status === 'missed' || c.status === 'rejected');
+  }).length;
+
   return (
     <div className="flex h-[100dvh] w-full bg-[#0b141a] overflow-hidden text-gray-200 font-sans">
       
@@ -2376,7 +2410,7 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
       <div className={`w-full md:w-[380px] bg-[#111b21] flex-col border-r border-[#222e35] shrink-0 ${activeChat ? 'hidden md:flex' : 'flex'}`}>
         
         {/* Sidebar Header */}
-        <div className="h-[64px] bg-[#202c33] px-4 flex items-center justify-between">
+        <div className="h-[64px] bg-[#202c33] px-4 flex items-center justify-between shrink-0">
           <div 
             onClick={() => setShowProfileModal(true)} 
             className="flex items-center gap-3 cursor-pointer hover:opacity-90 transition-opacity"
@@ -2385,7 +2419,7 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
             <img 
               src={myProfile?.avatar_url || currentUserAvatar} 
               alt="My Avatar" 
-              className="w-10 h-10 rounded-full border border-emerald-500/30 bg-[#1f2c34]"
+              className="w-10 h-10 rounded-full border border-emerald-500/30 bg-[#1f2c34] object-cover"
             />
             <div className="text-left -space-y-0.5">
               <div id="username-display" className="text-sm font-semibold text-white truncate max-w-[140px]">
@@ -2397,62 +2431,192 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          {/* WhatsApp-Style Vertical Overflow (⋮) Menu */}
+          <div className="relative" ref={overflowMenuRef}>
             <button
-              id="show-keys-btn"
-              onClick={() => setShowKeyManager(!showKeyManager)}
-              title="Secure E2EE Keys Manager"
-              className={`p-2 rounded-full cursor-pointer hover:bg-gray-700/60 transition-colors relative ${
-                showKeyManager || !hasE2EEKeys ? 'text-amber-400 bg-amber-400/5' : 'text-emerald-400 hover:text-emerald-300'
+              id="overflow-menu-btn"
+              onClick={() => setShowOverflowMenu(prev => !prev)}
+              title="More options"
+              className={`p-2 rounded-full cursor-pointer transition-colors relative flex items-center justify-center ${
+                showOverflowMenu ? 'bg-gray-700/80 text-emerald-400' : 'text-gray-300 hover:text-white hover:bg-gray-700/60'
               }`}
             >
-              <Key className="w-4 h-4" />
-              {!hasE2EEKeys && (
-                <span className="absolute top-1 right-1 w-2 h-2 bg-amber-400 rounded-full animate-pulse" />
+              <MoreVertical className="w-5 h-5" />
+              {(!hasE2EEKeys || newDeviceAlert) && (
+                <span className="absolute top-1 right-1 w-2 h-2 bg-emerald-400 rounded-full animate-pulse" />
               )}
             </button>
 
-            {/* Linked Devices Trigger */}
-            <button
-              id="show-linked-devices-btn"
-              onClick={openLinkedDevicesModal}
-              title="Linked Devices & Security"
-              className={`p-2 rounded-full cursor-pointer hover:bg-gray-700/60 transition-colors relative ${
-                showLinkedDevicesModal ? 'text-emerald-400 bg-emerald-500/10' : 'text-gray-400 hover:text-white'
-              }`}
-            >
-              <Laptop className="w-4 h-4" />
-              {newDeviceAlert && (
-                <span className="absolute top-1 right-1 w-2 h-2 bg-emerald-400 rounded-full animate-ping" />
-              )}
-            </button>
+            {/* Material Design WhatsApp Style Popup Menu */}
+            {showOverflowMenu && (
+              <div className="absolute right-0 top-11 w-60 bg-[#233138] border border-gray-700/60 rounded-xl shadow-2xl py-1.5 z-50 text-[#e9edef] animate-in fade-in zoom-in-95 duration-150 origin-top-right divide-y divide-gray-700/50">
+                
+                {/* Section 1: Security & Keys */}
+                <div className="py-1 px-1">
+                  <button
+                    id="menu-encryption-keys"
+                    onClick={() => {
+                      setShowKeyManager(prev => !prev);
+                      setShowOverflowMenu(false);
+                    }}
+                    className="w-full px-3 py-2 text-xs font-medium hover:bg-[#111b21]/80 rounded-lg flex items-center justify-between transition-colors cursor-pointer text-left"
+                  >
+                    <div className="flex items-center gap-3">
+                      <Key className="w-4 h-4 text-emerald-400 shrink-0" />
+                      <span>Encryption Keys</span>
+                    </div>
+                    {!hasE2EEKeys && (
+                      <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse shrink-0" />
+                    )}
+                  </button>
 
-            {/* Calling History Trigger */}
-            <button
-              id="show-calls-history-btn"
-              onClick={() => setShowCallHistory(!showCallHistory)}
-              title="Call History"
-              className={`p-2 rounded-full cursor-pointer hover:bg-gray-700/60 transition-colors ${
-                showCallHistory ? 'text-emerald-400 bg-emerald-500/10' : 'text-gray-400 hover:text-white'
-              }`}
-            >
-              <PhoneCall className="w-4 h-4" />
-            </button>
+                  <button
+                    id="menu-linked-devices"
+                    onClick={() => {
+                      openLinkedDevicesModal();
+                      setShowOverflowMenu(false);
+                    }}
+                    className="w-full px-3 py-2 text-xs font-medium hover:bg-[#111b21]/80 rounded-lg flex items-center justify-between transition-colors cursor-pointer text-left"
+                  >
+                    <div className="flex items-center gap-3">
+                      <Laptop className="w-4 h-4 text-emerald-400 shrink-0" />
+                      <span>Linked Devices</span>
+                    </div>
+                    {newDeviceAlert && (
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping shrink-0" />
+                    )}
+                  </button>
 
-            <button
-              id="logout-btn"
-              onClick={onLogout}
-              title="Sign Out"
-              className="p-2 text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 rounded-full cursor-pointer transition-colors"
-            >
-              <LogOut className="w-4 h-4" />
-            </button>
+                  <button
+                    id="menu-call-history"
+                    onClick={() => {
+                      setNavTab('calls');
+                      setShowOverflowMenu(false);
+                    }}
+                    className="w-full px-3 py-2 text-xs font-medium hover:bg-[#111b21]/80 rounded-lg flex items-center gap-3 transition-colors cursor-pointer text-left"
+                  >
+                    <PhoneCall className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <span>Call History</span>
+                  </button>
+                </div>
+
+                {/* Section 2: Preferences & Settings */}
+                <div className="py-1 px-1">
+                  <button
+                    id="menu-settings"
+                    onClick={() => {
+                      setShowProfileModal(true);
+                      setShowOverflowMenu(false);
+                    }}
+                    className="w-full px-3 py-2 text-xs font-medium hover:bg-[#111b21]/80 rounded-lg flex items-center gap-3 transition-colors cursor-pointer text-left"
+                  >
+                    <Settings className="w-4 h-4 text-gray-300 shrink-0" />
+                    <span>Settings</span>
+                  </button>
+
+                  <button
+                    id="menu-archived-chats"
+                    onClick={() => {
+                      setNavTab('chats');
+                      setShowOverflowMenu(false);
+                    }}
+                    className="w-full px-3 py-2 text-xs font-medium hover:bg-[#111b21]/80 rounded-lg flex items-center gap-3 transition-colors cursor-pointer text-left"
+                  >
+                    <Archive className="w-4 h-4 text-gray-300 shrink-0" />
+                    <span>Archived Chats</span>
+                  </button>
+
+                  <button
+                    id="menu-starred-messages"
+                    onClick={() => {
+                      setShowOverflowMenu(false);
+                    }}
+                    className="w-full px-3 py-2 text-xs font-medium hover:bg-[#111b21]/80 rounded-lg flex items-center gap-3 transition-colors cursor-pointer text-left"
+                  >
+                    <Star className="w-4 h-4 text-amber-400 shrink-0" />
+                    <span>Starred Messages</span>
+                  </button>
+
+                  <button
+                    id="menu-privacy-security"
+                    onClick={() => {
+                      openLinkedDevicesModal();
+                      setShowOverflowMenu(false);
+                    }}
+                    className="w-full px-3 py-2 text-xs font-medium hover:bg-[#111b21]/80 rounded-lg flex items-center gap-3 transition-colors cursor-pointer text-left"
+                  >
+                    <Shield className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <span>Privacy & Security</span>
+                  </button>
+
+                  <button
+                    id="menu-notifications"
+                    onClick={() => {
+                      setShowOverflowMenu(false);
+                    }}
+                    className="w-full px-3 py-2 text-xs font-medium hover:bg-[#111b21]/80 rounded-lg flex items-center gap-3 transition-colors cursor-pointer text-left"
+                  >
+                    <Bell className="w-4 h-4 text-gray-300 shrink-0" />
+                    <span>Notifications</span>
+                  </button>
+
+                  <button
+                    id="menu-appearance"
+                    onClick={() => {
+                      setShowOverflowMenu(false);
+                    }}
+                    className="w-full px-3 py-2 text-xs font-medium hover:bg-[#111b21]/80 rounded-lg flex items-center gap-3 transition-colors cursor-pointer text-left"
+                  >
+                    <Palette className="w-4 h-4 text-gray-300 shrink-0" />
+                    <span>Appearance</span>
+                  </button>
+                </div>
+
+                {/* Section 3: Help & Logout */}
+                <div className="py-1 px-1">
+                  <button
+                    id="menu-help-support"
+                    onClick={() => {
+                      setShowOverflowMenu(false);
+                    }}
+                    className="w-full px-3 py-2 text-xs font-medium hover:bg-[#111b21]/80 rounded-lg flex items-center gap-3 transition-colors cursor-pointer text-left"
+                  >
+                    <HelpCircle className="w-4 h-4 text-gray-300 shrink-0" />
+                    <span>Help & Support</span>
+                  </button>
+
+                  <button
+                    id="menu-about"
+                    onClick={() => {
+                      setShowOverflowMenu(false);
+                    }}
+                    className="w-full px-3 py-2 text-xs font-medium hover:bg-[#111b21]/80 rounded-lg flex items-center gap-3 transition-colors cursor-pointer text-left"
+                  >
+                    <Info className="w-4 h-4 text-gray-300 shrink-0" />
+                    <span>About SupaChat</span>
+                  </button>
+
+                  <button
+                    id="menu-logout"
+                    onClick={() => {
+                      setShowOverflowMenu(false);
+                      onLogout();
+                    }}
+                    className="w-full px-3 py-2 text-xs font-semibold hover:bg-rose-500/15 text-rose-400 rounded-lg flex items-center gap-3 transition-colors cursor-pointer text-left"
+                  >
+                    <LogOut className="w-4 h-4 text-rose-400 shrink-0" />
+                    <span>Logout</span>
+                  </button>
+                </div>
+
+              </div>
+            )}
           </div>
         </div>
 
         {/* Sync Warn Alerts */}
         {e2eeAutoStatus === 'failed' && (
-          <div className="m-3 p-3 bg-amber-500/15 border border-amber-500/20 rounded-xl space-y-2 text-left">
+          <div className="m-3 p-3 bg-amber-500/15 border border-amber-500/20 rounded-xl space-y-2 text-left shrink-0">
             <div className="flex gap-2 items-center justify-between text-amber-300 text-xs font-semibold">
               <div className="flex items-center gap-2">
                 <Shield className="w-4 h-4 text-amber-400 shrink-0" />
@@ -2488,7 +2652,7 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
         )}
 
         {dbStatus === 'error' && (
-          <div className="m-3 p-3 bg-rose-500/15 border border-rose-500/20 rounded-xl space-y-2 text-left">
+          <div className="m-3 p-3 bg-rose-500/15 border border-rose-500/20 rounded-xl space-y-2 text-left shrink-0">
             <div className="flex gap-2 items-center text-rose-300 text-xs font-semibold">
               <AlertCircle className="w-4 h-4" /> {dbErrorString?.toLowerCase().includes('failed to fetch') ? 'Network Unreachable' : 'Sync Offline'}
             </div>
@@ -2503,7 +2667,7 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
 
         {/* Collapsible Encryption Panel */}
         {showKeyManager && (
-          <div className="p-3 border-b border-[#222e35] bg-[#0b141a]">
+          <div className="p-3 border-b border-[#222e35] bg-[#0b141a] shrink-0">
             <E2EEKeyManager 
               userId={currentUserId} 
               hasKeys={hasE2EEKeys} 
@@ -2516,197 +2680,457 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
           </div>
         )}
 
-        {showCallHistory ? (
+        {/* Search Bar Area */}
+        <div className="p-3 bg-[#111b21] shrink-0 border-b border-gray-800/40">
+          <div className="relative bg-[#202c33] flex items-center rounded-xl px-3 py-2 border border-gray-800 focus-within:border-emerald-500/50 select-none shadow-sm">
+            <Search className="w-4 h-4 text-gray-400 mr-2 shrink-0" />
+            <input 
+              type="text" 
+              placeholder={
+                navTab === 'chats' ? 'Search active chats...' :
+                navTab === 'groups' ? 'Search groups...' :
+                navTab === 'global' ? 'Search users by name, @username, email...' :
+                'Search calls history...'
+              }
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full bg-transparent text-xs text-white focus:outline-none placeholder-gray-400"
+            />
+            {searchQuery && (
+              <button 
+                onClick={() => setSearchQuery('')}
+                className="text-xs text-gray-400 hover:text-white ml-1 px-1 cursor-pointer"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Tab 1: CHATS */}
+        {navTab === 'chats' && (
+          <div className="flex-1 overflow-y-auto divide-y divide-gray-800/40 min-h-0">
+            {/* Quick Actions */}
+            <div className="p-2 bg-[#1f2c34]/20 border-b border-gray-800/40">
+              <div className="flex gap-2">
+                <button
+                  id="modal-new-dm-btn"
+                  onClick={() => setNavTab('global')}
+                  className="flex-1 py-1.5 px-3 bg-[#02e7f5]/10 hover:bg-[#02e7f5]/15 text-[#02e7f5] border border-[#02e7f5]/20 text-xs rounded-lg font-semibold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" /> Start Chat
+                </button>
+                
+                <button
+                  id="modal-new-group-btn"
+                  onClick={() => setShowNewGroupModal(true)}
+                  className="flex-1 py-1.5 px-3 bg-emerald-500/10 hover:bg-emerald-500/15 text-emerald-400 border border-emerald-500/20 text-xs rounded-lg font-semibold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <Users className="w-3.5 h-3.5" /> New Group
+                </button>
+              </div>
+            </div>
+
+            {/* List of Active Conversations */}
+            <div className="p-2 space-y-1">
+              {/* Direct Chats with Messages */}
+              {activeDirectProfiles
+                .filter(p => {
+                  if (!searchQuery) return true;
+                  const q = searchQuery.toLowerCase().replace(/^@/, '').trim();
+                  const nameMatch = (p.display_name || '').toLowerCase().includes(q);
+                  const userMatch = (p.username || '').toLowerCase().includes(q);
+                  const emailMatch = (p.email || '').toLowerCase().includes(q);
+                  const msgMatch = (lastMessages[p.id]?.text || '').toLowerCase().includes(q);
+                  return nameMatch || userMatch || emailMatch || msgMatch;
+                })
+                .map(profile => {
+                  const isActive = activeChat?.type === 'direct' && activeChat.id === profile.id;
+                  const targetHasKeys = !!profile.public_key;
+
+                  return (
+                    <button
+                      key={profile.id}
+                      onClick={() => setActiveChat({ type: 'direct', id: profile.id })}
+                      className={`w-full p-2.5 rounded-xl text-left transition-all flex items-center gap-3 cursor-pointer ${
+                        isActive ? 'bg-[#2a3942] text-white shadow-md' : 'hover:bg-[#202c33]/60 text-gray-300'
+                      }`}
+                    >
+                      <div className="relative shrink-0">
+                        <img 
+                          src={profile.avatar_url || `https://api.dicebear.com/7.x/adventurer/svg?seed=${profile.username}`} 
+                          alt={getDisplayName(profile)} 
+                          className="w-10 h-10 rounded-full bg-slate-800 object-cover"
+                        />
+                        <span className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-[#111b21] ${
+                          targetHasKeys ? 'bg-emerald-400' : 'bg-gray-500'
+                        }`} />
+                      </div>
+
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between gap-1">
+                          <h5 className="text-xs font-semibold truncate text-[#f0f2f5] flex-1">
+                            {getDisplayName(profile)}
+                          </h5>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {lastMessages[profile.id] && (
+                              <span className="text-[9px] text-gray-500 font-mono">
+                                {formatLastMessageTime(lastMessages[profile.id].created_at)}
+                              </span>
+                            )}
+                            {targetHasKeys ? (
+                              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" title="E2EE Active" />
+                            ) : (
+                              <Shield className="w-3.5 h-3.5 text-amber-500/60" title="Encryption keys not set" />
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-center justify-between mt-0.5">
+                          <p className="text-[10px] text-gray-400 truncate font-sans max-w-[80%]">
+                            {lastMessages[profile.id]?.text ? (
+                              formatCallEventPreview(lastMessages[profile.id].text, currentUserId)
+                            ) : (
+                              'No messages yet'
+                            )}
+                          </p>
+                          {unreadCounts[profile.id] > 0 && (
+                            <span className="bg-emerald-500 text-black text-[9px] font-bold px-1.5 py-0.5 rounded-full shrink-0 animate-pulse select-none min-w-[16px] text-center">
+                              {unreadCounts[profile.id]}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+
+              {/* Group Conversations with recent activity */}
+              {sortedGroups
+                .filter(g => !searchQuery || g.name.toLowerCase().includes(searchQuery.toLowerCase()) || (lastMessages[g.id]?.text || '').toLowerCase().includes(searchQuery.toLowerCase()))
+                .map(group => {
+                  const isActive = activeChat?.type === 'group' && activeChat.id === group.id;
+
+                  return (
+                    <button
+                      key={group.id}
+                      onClick={() => setActiveChat({ type: 'group', id: group.id })}
+                      className={`w-full p-2.5 rounded-xl text-left transition-all flex items-center gap-3 cursor-pointer ${
+                        isActive ? 'bg-[#2a3942] text-white shadow-md' : 'hover:bg-[#202c33]/60 text-gray-300'
+                      }`}
+                    >
+                      <img 
+                        src={group.avatar_url || `https://api.dicebear.com/7.x/adventurer/svg?seed=${group.name}`} 
+                        alt={group.name} 
+                        className="w-10 h-10 rounded-full bg-slate-800 object-cover shrink-0"
+                      />
+
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between gap-1">
+                          <h5 className="text-xs font-semibold truncate text-[#f0f2f5] flex-1">{group.name}</h5>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {lastMessages[group.id] && (
+                              <span className="text-[9px] text-gray-500 font-mono">
+                                {formatLastMessageTime(lastMessages[group.id].created_at)}
+                              </span>
+                            )}
+                            <Users className="w-3.5 h-3.5 text-emerald-400" />
+                          </div>
+                        </div>
+                        <div className="flex items-center justify-between mt-0.5">
+                          <p className="text-[10px] text-gray-400 truncate font-sans max-w-[80%]">
+                            {lastMessages[group.id]?.text ? (
+                              formatCallEventPreview(lastMessages[group.id].text, currentUserId)
+                            ) : (
+                              'No messages yet'
+                            )}
+                          </p>
+                          {unreadCounts[group.id] > 0 && (
+                            <span className="bg-emerald-500 text-black text-[9px] font-bold px-1.5 py-0.5 rounded-full shrink-0 animate-pulse select-none min-w-[16px] text-center">
+                              {unreadCounts[group.id]}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+
+              {/* Empty state if no active conversations exist */}
+              {activeDirectProfiles.length === 0 && groups.length === 0 && (
+                <div className="flex flex-col items-center justify-center py-12 px-4 text-center text-gray-400">
+                  <MessageSquare className="w-10 h-10 mb-2.5 text-emerald-500/40" />
+                  <p className="text-xs font-semibold text-gray-300">No active conversations</p>
+                  <p className="text-[11px] text-gray-500 mt-1 max-w-[220px]">
+                    Find users in Global Contacts to start messaging.
+                  </p>
+                  <button
+                    onClick={() => setNavTab('global')}
+                    className="mt-3.5 px-4 py-1.5 bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 rounded-lg text-xs font-semibold hover:bg-emerald-500/25 transition-colors cursor-pointer"
+                  >
+                    Explore Global Contacts
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Tab 2: GROUPS */}
+        {navTab === 'groups' && (
+          <div className="flex-1 overflow-y-auto divide-y divide-gray-800/40 min-h-0">
+            {/* Create Group Action */}
+            <div className="p-2 bg-[#1f2c34]/20 border-b border-gray-800/40">
+              <button
+                id="groups-tab-new-group-btn"
+                onClick={() => setShowNewGroupModal(true)}
+                className="w-full py-2 px-3 bg-emerald-500/10 hover:bg-emerald-500/15 text-emerald-400 border border-emerald-500/20 text-xs rounded-lg font-semibold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" /> Create New Group
+              </button>
+            </div>
+
+            {/* List of Groups Only */}
+            <div className="p-2 space-y-1">
+              {sortedGroups
+                .filter(g => !searchQuery || g.name.toLowerCase().includes(searchQuery.toLowerCase()) || (lastMessages[g.id]?.text || '').toLowerCase().includes(searchQuery.toLowerCase()))
+                .map(group => {
+                  const isActive = activeChat?.type === 'group' && activeChat.id === group.id;
+
+                  return (
+                    <button
+                      key={group.id}
+                      onClick={() => setActiveChat({ type: 'group', id: group.id })}
+                      className={`w-full p-2.5 rounded-xl text-left transition-all flex items-center gap-3 cursor-pointer ${
+                        isActive ? 'bg-[#2a3942] text-white shadow-md' : 'hover:bg-[#202c33]/60 text-gray-300'
+                      }`}
+                    >
+                      <img 
+                        src={group.avatar_url || `https://api.dicebear.com/7.x/adventurer/svg?seed=${group.name}`} 
+                        alt={group.name} 
+                        className="w-10 h-10 rounded-full bg-slate-800 object-cover shrink-0"
+                      />
+
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between gap-1">
+                          <h5 className="text-xs font-semibold truncate text-[#f0f2f5] flex-1">{group.name}</h5>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {lastMessages[group.id] && (
+                              <span className="text-[9px] text-gray-500 font-mono">
+                                {formatLastMessageTime(lastMessages[group.id].created_at)}
+                              </span>
+                            )}
+                            <Users className="w-3.5 h-3.5 text-emerald-400" />
+                          </div>
+                        </div>
+                        <div className="flex items-center justify-between mt-0.5">
+                          <p className="text-[10px] text-gray-400 truncate font-sans max-w-[80%]">
+                            {lastMessages[group.id]?.text ? (
+                              formatCallEventPreview(lastMessages[group.id].text, currentUserId)
+                            ) : (
+                              'No group messages yet'
+                            )}
+                          </p>
+                          {unreadCounts[group.id] > 0 && (
+                            <span className="bg-emerald-500 text-black text-[9px] font-bold px-1.5 py-0.5 rounded-full shrink-0 animate-pulse select-none min-w-[16px] text-center">
+                              {unreadCounts[group.id]}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+
+              {sortedGroups.length === 0 && (
+                <div className="flex flex-col items-center justify-center py-12 px-4 text-center text-gray-400">
+                  <Users className="w-10 h-10 mb-2.5 text-emerald-500/40" />
+                  <p className="text-xs font-semibold text-gray-300">No group channels found</p>
+                  <p className="text-[11px] text-gray-500 mt-1 max-w-[220px]">
+                    Create a group channel to chat with multiple members.
+                  </p>
+                  <button
+                    onClick={() => setShowNewGroupModal(true)}
+                    className="mt-3.5 px-4 py-1.5 bg-emerald-500 text-slate-950 font-bold rounded-lg text-xs hover:bg-emerald-400 transition-colors cursor-pointer"
+                  >
+                    Create Group
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Tab 3: GLOBAL / CONTACTS */}
+        {navTab === 'global' && (
+          <div className="flex-1 overflow-y-auto divide-y divide-gray-800/40 min-h-0">
+            {/* Header info banner */}
+            <div className="p-2.5 bg-[#202c33]/40 border-b border-gray-800/40 text-[11px] text-gray-400 flex items-center gap-2">
+              <Globe className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span>Tap a user to open chat. Conversations appear in Chats after your first message.</span>
+            </div>
+
+            {/* List of Discoverable Users */}
+            <div className="p-2 space-y-1">
+              {sortedProfiles
+                .filter(p => {
+                  if (p.id === currentUserId) return false;
+                  if (!searchQuery) return true;
+                  const q = searchQuery.toLowerCase().replace(/^@/, '').trim();
+                  const nameMatch = (p.display_name || '').toLowerCase().includes(q);
+                  const userMatch = (p.username || '').toLowerCase().includes(q);
+                  const emailMatch = (p.email || '').toLowerCase().includes(q);
+                  return nameMatch || userMatch || emailMatch;
+                })
+                .map(profile => {
+                  const isActive = activeChat?.type === 'direct' && activeChat.id === profile.id;
+                  const targetHasKeys = !!profile.public_key;
+
+                  return (
+                    <button
+                      key={profile.id}
+                      onClick={() => handleStartDirectChat(profile)}
+                      className={`w-full p-2.5 rounded-xl text-left transition-all flex items-center gap-3 cursor-pointer ${
+                        isActive ? 'bg-[#2a3942] text-white shadow-md' : 'hover:bg-[#202c33]/60 text-gray-300'
+                      }`}
+                    >
+                      <div className="relative shrink-0">
+                        <img 
+                          src={profile.avatar_url || `https://api.dicebear.com/7.x/adventurer/svg?seed=${profile.username}`} 
+                          alt={getDisplayName(profile)} 
+                          className="w-10 h-10 rounded-full bg-slate-800 object-cover"
+                        />
+                        <span className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-[#111b21] ${
+                          targetHasKeys ? 'bg-emerald-400' : 'bg-gray-500'
+                        }`} />
+                      </div>
+
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between gap-1">
+                          <h5 className="text-xs font-semibold truncate text-[#f0f2f5] flex-1">
+                            {getDisplayName(profile)}
+                          </h5>
+                          {targetHasKeys ? (
+                            <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" title="E2EE Active" />
+                          ) : (
+                            <Shield className="w-3.5 h-3.5 text-amber-500/60 shrink-0" title="Encryption keys not set" />
+                          )}
+                        </div>
+                        <p className="text-[10px] text-emerald-400/90 font-mono truncate mt-0.5">
+                          {getFormattedUsername(profile)}
+                        </p>
+                      </div>
+
+                      <div className="shrink-0 px-2 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 rounded-md text-[10px] font-semibold">
+                        Message
+                      </div>
+                    </button>
+                  );
+                })}
+
+              {profiles.filter(p => p.id !== currentUserId).length === 0 && (
+                <p className="text-[11px] text-gray-500 text-center py-8 italic select-none">No discoverable contacts yet.</p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Tab 4: CALLS */}
+        {navTab === 'calls' && (
           <div className="flex-1 min-h-0">
             <CallHistoryScreen
               logs={callHistory}
               currentUserId={currentUserId}
-              onClose={() => setShowCallHistory(false)}
+              onClose={() => setNavTab('chats')}
               onStartCall={startCall}
+              onOpenChat={(id, type) => setActiveChat({ type, id })}
+              searchQuery={searchQuery}
             />
           </div>
-        ) : (
-          <>
-            {/* Searching Contacts */}
-            <div className="p-3">
-              <div className="relative bg-[#202c33] flex items-center rounded-xl px-3 py-1.5 border border-gray-800 focus-within:border-emerald-500/40 select-none">
-                <Search className="w-4 h-4 text-gray-400 mr-2" />
-                <input 
-                  type="text" 
-                  placeholder="Search or start new chat" 
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full bg-transparent text-xs text-white focus:outline-none placeholder-gray-400"
-                />
-              </div>
-            </div>
-
-            {/* Dynamic Chats List */}
-            <div className="flex-1 overflow-y-auto divide-y divide-gray-800/40">
-              
-              {/* Section: Direct Actions */}
-              <div className="p-2 space-y-2 bg-[#1f2c34]/20">
-                <div className="flex gap-2">
-                  <button
-                    id="modal-new-dm-btn"
-                    onClick={() => setShowNewDirectChatModal(true)}
-                    className="flex-1 py-2 px-3 bg-[#02e7f5]/10 hover:bg-[#02e7f5]/15 text-[#02e7f5] border border-[#02e7f5]/20 text-xs rounded-lg font-semibold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-                  >
-                    <Plus className="w-3.5 h-3.5" /> Private Chat
-                  </button>
-                  
-                  <button
-                    id="modal-new-group-btn"
-                    onClick={() => setShowNewGroupModal(true)}
-                    className="flex-1 py-2 px-3 bg-emerald-500/10 hover:bg-emerald-500/15 text-emerald-400 border border-emerald-500/20 text-xs rounded-lg font-semibold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-                  >
-                    <Users className="w-3.5 h-3.5" /> Group Chat
-                  </button>
-                </div>
-              </div>
-
-              {/* Direct Threads */}
-              <div className="px-2 py-3">
-                <span className="text-[10px] font-bold text-gray-500 uppercase px-2 tracking-wider">Direct Channels</span>
-                <div className="space-y-1 mt-2">
-                  {sortedProfiles
-                    .filter(p => {
-                      if (!searchQuery) return true;
-                      const q = searchQuery.toLowerCase().replace(/^@/, '').trim();
-                      const nameMatch = (p.display_name || '').toLowerCase().includes(q);
-                      const userMatch = (p.username || '').toLowerCase().includes(q);
-                      const emailMatch = (p.email || '').toLowerCase().includes(q);
-                      return nameMatch || userMatch || emailMatch;
-                    })
-                    .map(profile => {
-                      const isActive = activeChat?.type === 'direct' && activeChat.id === profile.id;
-                      const targetHasKeys = !!profile.public_key;
-
-                      return (
-                        <button
-                          key={profile.id}
-                          onClick={() => setActiveChat({ type: 'direct', id: profile.id })}
-                          className={`w-full p-2.5 rounded-xl text-left transition-all flex items-center gap-3 cursor-pointer ${
-                            isActive ? 'bg-[#2a3942] text-white shadow-md' : 'hover:bg-[#202c33]/60 text-gray-300'
-                          }`}
-                        >
-                          <div className="relative">
-                            <img 
-                              src={profile.avatar_url || `https://api.dicebear.com/7.x/adventurer/svg?seed=${profile.username}`} 
-                              alt={getDisplayName(profile)} 
-                              className="w-10 h-10 rounded-full bg-slate-800"
-                            />
-                            <span className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-[#111b21] ${
-                              targetHasKeys ? 'bg-emerald-400' : 'bg-gray-500'
-                            }`} />
-                          </div>
-
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center justify-between gap-1">
-                              <h5 className="text-xs font-semibold truncate text-[#f0f2f5] flex-1">
-                                {getDisplayName(profile)}
-                              </h5>
-                              <div className="flex items-center gap-1.5 shrink-0">
-                                {lastMessages[profile.id] && (
-                                  <span className="text-[9px] text-gray-500 font-mono">
-                                    {formatLastMessageTime(lastMessages[profile.id].created_at)}
-                                  </span>
-                                )}
-                                {targetHasKeys ? (
-                                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" title="E2EE Active" />
-                                ) : (
-                                  <Shield className="w-3.5 h-3.5 text-amber-500/60" title="Encryption keys not set" />
-                                )}
-                              </div>
-                            </div>
-                            <div className="flex items-center justify-between mt-0.5">
-                              <p className="text-[10px] text-gray-400 truncate font-sans max-w-[80%]">
-                                {lastMessages[profile.id]?.text ? (
-                                  formatCallEventPreview(lastMessages[profile.id].text, currentUserId)
-                                ) : (
-                                  'No messages yet'
-                                )}
-                              </p>
-                              {unreadCounts[profile.id] > 0 && (
-                                <span className="bg-emerald-500 text-black text-[9px] font-bold px-1.5 py-0.5 rounded-full shrink-0 animate-pulse select-none min-w-[16px] text-center">
-                                  {unreadCounts[profile.id]}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        </button>
-                      );
-                    })}
-                  
-                  {profiles.length === 0 && (
-                    <p className="text-[11px] text-gray-500 text-center py-4 italic select-none">No active direct contacts list.</p>
-                  )}
-                </div>
-              </div>
-
-              {/* Group Threads */}
-              <div className="px-2 py-3">
-                <span className="text-[10px] font-bold text-gray-500 uppercase px-2 tracking-wider">Group Channels</span>
-                <div className="space-y-1 mt-2">
-                  {sortedGroups
-                    .filter(g => !searchQuery || g.name.toLowerCase().includes(searchQuery.toLowerCase()))
-                    .map(group => {
-                      const isActive = activeChat?.type === 'group' && activeChat.id === group.id;
-
-                      return (
-                        <button
-                          key={group.id}
-                          onClick={() => setActiveChat({ type: 'group', id: group.id })}
-                          className={`w-full p-2.5 rounded-xl text-left transition-all flex items-center gap-3 cursor-pointer ${
-                            isActive ? 'bg-[#2a3942] text-white shadow-md' : 'hover:bg-[#202c33]/60 text-gray-300'
-                          }`}
-                        >
-                          <img 
-                            src={group.avatar_url || `https://api.dicebear.com/7.x/adventurer/svg?seed=${group.name}`} 
-                            alt={group.name} 
-                            className="w-10 h-10 rounded-full bg-slate-800"
-                          />
-
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center justify-between gap-1">
-                              <h5 className="text-xs font-semibold truncate text-[#f0f2f5] flex-1">{group.name}</h5>
-                              <div className="flex items-center gap-1.5 shrink-0">
-                                {lastMessages[group.id] && (
-                                  <span className="text-[9px] text-gray-500 font-mono">
-                                    {formatLastMessageTime(lastMessages[group.id].created_at)}
-                                  </span>
-                                )}
-                                <Users className="w-3.5 h-3.5 text-emerald-400" />
-                              </div>
-                            </div>
-                            <div className="flex items-center justify-between mt-0.5">
-                              <p className="text-[10px] text-gray-400 truncate font-sans max-w-[80%]">
-                                {lastMessages[group.id]?.text ? (
-                                  formatCallEventPreview(lastMessages[group.id].text, currentUserId)
-                                ) : (
-                                  'No messages yet'
-                                )}
-                              </p>
-                              {unreadCounts[group.id] > 0 && (
-                                <span className="bg-emerald-500 text-black text-[9px] font-bold px-1.5 py-0.5 rounded-full shrink-0 animate-pulse select-none min-w-[16px] text-center">
-                                  {unreadCounts[group.id]}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        </button>
-                      );
-                    })}
-
-                  {groups.length === 0 && (
-                    <p className="text-[11px] text-gray-500 text-center py-4 italic select-none">No group conversations found.</p>
-                  )}
-                </div>
-              </div>
-
-            </div>
-          </>
         )}
+
+        {/* WhatsApp-Style Fixed Bottom Navigation Bar */}
+        <div className="h-[62px] bg-[#1f2c34] border-t border-[#222e35] flex items-center justify-around px-2 shrink-0 select-none">
+          {/* Chats Tab */}
+          <button
+            id="nav-tab-chats"
+            onClick={() => setNavTab('chats')}
+            className={`flex-1 flex flex-col items-center justify-center py-1.5 transition-all relative cursor-pointer ${
+              navTab === 'chats' ? 'text-emerald-400 font-bold' : 'text-gray-400 hover:text-gray-200'
+            }`}
+          >
+            <div className="relative">
+              <MessageSquare className="w-5 h-5" />
+              {totalChatsUnread > 0 && (
+                <span className="absolute -top-1.5 -right-2.5 bg-emerald-500 text-black text-[9px] font-black px-1.5 py-0.2 rounded-full select-none shadow">
+                  {totalChatsUnread > 99 ? '99+' : totalChatsUnread}
+                </span>
+              )}
+            </div>
+            <span className="text-[10px] mt-1 font-medium tracking-wide">Chats</span>
+            {navTab === 'chats' && (
+              <span className="absolute top-0 left-1/2 -translate-x-1/2 w-8 h-0.5 bg-emerald-400 rounded-full" />
+            )}
+          </button>
+
+          {/* Groups Tab */}
+          <button
+            id="nav-tab-groups"
+            onClick={() => setNavTab('groups')}
+            className={`flex-1 flex flex-col items-center justify-center py-1.5 transition-all relative cursor-pointer ${
+              navTab === 'groups' ? 'text-emerald-400 font-bold' : 'text-gray-400 hover:text-gray-200'
+            }`}
+          >
+            <div className="relative">
+              <Users className="w-5 h-5" />
+              {unreadGroupsCount > 0 && (
+                <span className="absolute -top-1.5 -right-2.5 bg-emerald-500 text-black text-[9px] font-black px-1.5 py-0.2 rounded-full select-none shadow">
+                  {unreadGroupsCount > 99 ? '99+' : unreadGroupsCount}
+                </span>
+              )}
+            </div>
+            <span className="text-[10px] mt-1 font-medium tracking-wide">Groups</span>
+            {navTab === 'groups' && (
+              <span className="absolute top-0 left-1/2 -translate-x-1/2 w-8 h-0.5 bg-emerald-400 rounded-full" />
+            )}
+          </button>
+
+          {/* Global / Contacts Tab */}
+          <button
+            id="nav-tab-global"
+            onClick={() => setNavTab('global')}
+            className={`flex-1 flex flex-col items-center justify-center py-1.5 transition-all relative cursor-pointer ${
+              navTab === 'global' ? 'text-emerald-400 font-bold' : 'text-gray-400 hover:text-gray-200'
+            }`}
+          >
+            <Globe className="w-5 h-5" />
+            <span className="text-[10px] mt-1 font-medium tracking-wide">Global</span>
+            {navTab === 'global' && (
+              <span className="absolute top-0 left-1/2 -translate-x-1/2 w-8 h-0.5 bg-emerald-400 rounded-full" />
+            )}
+          </button>
+
+          {/* Calls Tab */}
+          <button
+            id="nav-tab-calls"
+            onClick={() => setNavTab('calls')}
+            className={`flex-1 flex flex-col items-center justify-center py-1.5 transition-all relative cursor-pointer ${
+              navTab === 'calls' ? 'text-emerald-400 font-bold' : 'text-gray-400 hover:text-gray-200'
+            }`}
+          >
+            <div className="relative">
+              <PhoneCall className="w-5 h-5" />
+              {missedCallsCount > 0 && (
+                <span className="absolute -top-1.5 -right-2.5 bg-rose-500 text-white text-[9px] font-black px-1.5 py-0.2 rounded-full select-none shadow">
+                  {missedCallsCount > 99 ? '99+' : missedCallsCount}
+                </span>
+              )}
+            </div>
+            <span className="text-[10px] mt-1 font-medium tracking-wide">Calls</span>
+            {navTab === 'calls' && (
+              <span className="absolute top-0 left-1/2 -translate-x-1/2 w-8 h-0.5 bg-emerald-400 rounded-full" />
+            )}
+          </button>
+        </div>
 
       </div>
 
