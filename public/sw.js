@@ -10,13 +10,13 @@ const STATIC_ASSETS = [
   '/icon-maskable-512.png'
 ];
 
-// 1. Installation - Cache static shell
+// 1. Installation - Cache static shell safely
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(STATIC_ASSETS).catch((err) => {
-        console.warn('SW static asset caching warning:', err);
-      });
+    caches.open(CACHE_NAME).then(async (cache) => {
+      await Promise.allSettled(
+        STATIC_ASSETS.map(asset => cache.add(asset).catch(err => console.warn('Cache error for:', asset, err)))
+      );
     }).then(() => self.skipWaiting())
   );
 });
