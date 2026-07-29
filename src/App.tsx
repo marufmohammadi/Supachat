@@ -4,25 +4,27 @@ import AuthLayout from './components/AuthLayout';
 import ChatLayout from './components/ChatLayout';
 import DatabaseSetupModal from './components/DatabaseSetupModal';
 import { deviceService, getDeviceFingerprintDetails } from './features/device-verification';
+import { withTimeout } from './utils/timeout';
 
 async function isDeviceAuthorized(userId: string): Promise<boolean> {
   try {
     const currentFp = getDeviceFingerprintDetails(userId);
     
-    // Perform device checks with a fast 1.5s timeout fallback
-    const checkPromise = (async () => {
-      const activePrimary = await deviceService.getActivePrimaryDevice(userId, false);
-      if (!activePrimary) {
-        return true;
-      }
-      if (activePrimary.device_id === currentFp.device_id && !activePrimary.is_revoked) {
-        return true;
-      }
-      return await deviceService.isDeviceApproved(userId, currentFp.device_id, false);
-    })();
-
-    const timeoutPromise = new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 1500));
-    return await Promise.race([checkPromise, timeoutPromise]);
+    // Fast background device check with 800ms timeout
+    return await withTimeout(
+      (async () => {
+        const activePrimary = await deviceService.getActivePrimaryDevice(userId, false);
+        if (!activePrimary) {
+          return true;
+        }
+        if (activePrimary.device_id === currentFp.device_id && !activePrimary.is_revoked) {
+          return true;
+        }
+        return await deviceService.isDeviceApproved(userId, currentFp.device_id, false);
+      })(),
+      800,
+      true
+    );
   } catch {
     return true; // Graceful fallback on network error/offline
   }
@@ -38,26 +40,38 @@ export default function App() {
   useEffect(() => {
     let isMounted = true;
 
-    // Fast active session restore with 2s max timeout
+    // Fail-safe deadlock timer: Splash screen NEVER blocks longer than 600ms
+    const deadlockTimer = setTimeout(() => {
+      if (isMounted && initializing) {
+        console.warn('[PWA Boot] Deadlock safety timer fired (600ms). Dismissing splash screen.');
+        setInitializing(false);
+      }
+    }, 600);
+
+    // Ultra-fast active session restore from local auth storage
     const getSession = async () => {
       try {
-        const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Auth restore timeout')), 2000));
-        const sessionPromise = supabase.auth.getSession();
-
-        const { data }: any = await Promise.race([sessionPromise, timeoutPromise]).catch((err) => {
-          console.warn('[PWA Boot] Fast auth timeout fallback:', err);
-          return { data: { session: null } };
-        });
+        const { data }: any = await withTimeout(
+          supabase.auth.getSession(),
+          400,
+          { data: { session: null }, error: null } as any
+        );
 
         if (!isMounted) return;
 
         const activeSession = data?.session;
         if (activeSession) {
-          const authorized = await isDeviceAuthorized(activeSession.user.id);
-          if (authorized && isMounted) {
-            setSession(activeSession);
-            setIsSandboxMode(false);
-          }
+          // Render main UI immediately!
+          setSession(activeSession);
+          setIsSandboxMode(false);
+          
+          // Verify device authorization asynchronously in the background
+          isDeviceAuthorized(activeSession.user.id).then((authorized) => {
+            if (!authorized && isMounted) {
+              console.warn('[PWA Boot] Device unauthorized on background check.');
+              setSession(null);
+            }
+          }).catch((err) => console.warn('[PWA Boot] Background device check notice:', err));
         }
         setIsDbOffline(false);
       } catch (err: any) {
@@ -69,6 +83,7 @@ export default function App() {
       } finally {
         if (isMounted) {
           setInitializing(false);
+          clearTimeout(deadlockTimer);
         }
       }
     };
@@ -76,13 +91,16 @@ export default function App() {
     getSession();
 
     // Listen for Auth Changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, newSession) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, newSession) => {
       if (!isMounted) return;
       if (newSession && !isSandboxMode) {
-        const authorized = await isDeviceAuthorized(newSession.user.id);
-        if (authorized && isMounted) {
-          setSession(newSession);
-        }
+        setSession(newSession);
+        // Verify in background
+        isDeviceAuthorized(newSession.user.id).then((authorized) => {
+          if (!authorized && isMounted) {
+            setSession(null);
+          }
+        }).catch(() => {});
       } else if (!newSession && !isSandboxMode) {
         setSession(null);
       }
@@ -90,9 +108,11 @@ export default function App() {
 
     return () => {
       isMounted = false;
+      clearTimeout(deadlockTimer);
       subscription.unsubscribe();
     };
   }, [isSandboxMode]);
+
 
   const handleAuthSuccess = (newSession: any, sandbox: boolean) => {
     setIsSandboxMode(sandbox);

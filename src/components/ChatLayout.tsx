@@ -16,6 +16,7 @@ import { ViewOnceViewerModal } from './disappearing/ViewOnceViewerModal';
 import { CountdownTimer } from './disappearing/CountdownTimer';
 import { ProfilePageModal } from './ProfilePageModal';
 import { getDisplayName, getFormattedUsername } from '../utils/username';
+import { withTimeout } from '../utils/timeout';
 
 // WebRTC Calling System Imports
 import { PhoneCall, Phone, PhoneMissed, Video } from 'lucide-react';
@@ -708,19 +709,30 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
   const fetchRealProfilesAndGroups = async () => {
     try {
       setDbErrorString(null);
-      // 1. Fetch profiles
-      const { data: pData, error: pError } = await supabase
-        .from('profiles')
-        .select('*')
-        .order('username');
-      
-      if (pError) {
-        console.error('Error fetching profiles:', pError);
-        setDbErrorString(`Profiles fetch failed: ${pError.message}`);
-        setDbStatus('error');
-        return;
+
+      // 1 & 2. Fetch profiles and group memberships concurrently in parallel with 2.5s timeouts
+      const [profilesRes, groupsRes] = await Promise.all([
+        withTimeout(
+          supabase.from('profiles').select('*').order('username'),
+          2500,
+          { data: null, error: new Error('Profiles fetch timeout') } as any
+        ),
+        withTimeout(
+          supabase.from('group_members').select('groups (*)').eq('user_id', currentUserId),
+          2500,
+          { data: null, error: new Error('Groups fetch timeout') } as any
+        )
+      ]);
+
+      const pData = profilesRes.data;
+      const pError = profilesRes.error;
+      const gData = groupsRes.data;
+
+      if (pError && !pData) {
+        console.warn('Error or timeout fetching profiles:', pError);
+        setDbErrorString(`Profiles fetch notice: ${pError.message}`);
       }
-      
+
       if (pData) {
         const selfProfile = pData.find((u: Profile) => u.id === currentUserId);
         if (selfProfile) {
@@ -737,77 +749,46 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
 
         const hasMe = pData.some((u: Profile) => u.id === currentUserId);
         if (!hasMe && currentUserId) {
-          // Current user is missing (probably because trigger hasn't fired yet or were created earlier). Direct fallback write:
+          // Current user missing fallback write in background
           const localPublicKey = localStorage.getItem(`whatsapp_public_key_jwk_${currentUserId}`) || null;
-          const { error: insertErr } = await supabase
-            .from('profiles')
-            .insert({
-              id: currentUserId,
-              username: currentUsername,
-              avatar_url: currentUserAvatar,
-              public_key: localPublicKey
-            });
-          
-          if (!insertErr) {
-            // Re-fetch profiles so that we successfully list our newly inserted profile
-            const { data: pNewData, error: pNewErr } = await supabase
-              .from('profiles')
-              .select('*')
-              .order('username');
-            if (pNewData) {
-              setProfiles(pNewData.filter((u: Profile) => u.id !== currentUserId));
-            } else {
-              setProfiles(pData.filter((u: Profile) => u.id !== currentUserId));
-            }
-          } else {
-            console.warn('Error inserting self profile:', insertErr.message);
-            // It could be that the active insert failed, but let's show profiles we got.
-            setProfiles(pData.filter((u: Profile) => u.id !== currentUserId));
-          }
+          Promise.resolve(supabase.from('profiles').insert({
+            id: currentUserId,
+            username: currentUsername,
+            avatar_url: currentUserAvatar,
+            public_key: localPublicKey
+          })).catch(() => {});
+
+          setProfiles(pData.filter((u: Profile) => u.id !== currentUserId));
         } else {
           setProfiles(pData.filter((u: Profile) => u.id !== currentUserId));
         }
       }
 
-      // 2. Fetch groups current user is a member of
-      const { data: gData, error: gError } = await supabase
-        .from('group_members')
-        .select('groups (*)')
-        .eq('user_id', currentUserId);
       let joinedGroups: Group[] = [];
       if (gData) {
         joinedGroups = gData.map((item: any) => item.groups).filter(Boolean);
         setGroups(joinedGroups);
       }
 
-      // 2.5 Fetch last messages for direct/group chats to drive ordering and previews
-      await fetchLastMessages(joinedGroups);
+      // 2.5 & 3. Fetch last messages and unread counts concurrently in parallel!
+      await Promise.all([
+        fetchLastMessages(joinedGroups).catch((err) => console.warn('fetchLastMessages notice:', err)),
+        fetchUnreadCounts().catch((err) => console.warn('fetchUnreadCounts notice:', err))
+      ]);
 
-      // 3. Fetch initial unread counts across all chats
-      await fetchUnreadCounts();
-
-      // 4. Update any 'sent' direct messages to 'delivered' because we are now online
-      try {
-        console.log(`[AUDIT] Startup Delivery sweep triggered. Receiver ID: ${currentUserId}`);
-        const { data, error } = await supabase
-          .from('messages')
-          .update({ status: 'delivered', delivered_at: new Date().toISOString() })
-          .eq('receiver_id', currentUserId)
-          .or('status.eq.sent,status.is.null')
-          .select();
-        
-        if (error) {
-          console.error('[AUDIT] Startup Delivery sweep query failed:', error);
-        } else {
-          console.log('[AUDIT] Startup Delivery sweep query succeeded:', {
-            ReceiverID: currentUserId,
-            UpdatedCount: data?.length,
-            UpdatedMessages: data
-          });
+      // 4. Update delivery status sweep asynchronously in background without blocking UI
+      setTimeout(async () => {
+        try {
+          await supabase
+            .from('messages')
+            .update({ status: 'delivered', delivered_at: new Date().toISOString() })
+            .eq('receiver_id', currentUserId)
+            .or('status.eq.sent,status.is.null');
+        } catch {
+          // Silent delivery sweep background update
         }
-      } catch (delErr) {
-        console.warn('Could not update pending message delivery statuses:', delErr);
-      }
+      }, 500);
+
     } catch (err) {
       console.error('Failed to sync profile tables:', err);
     }

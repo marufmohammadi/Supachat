@@ -4,6 +4,7 @@ import { getFirestore, Firestore, doc, setDoc, getDocFromServer } from 'firebase
 import { getMessaging, getToken, onMessage, isSupported, Messaging } from 'firebase/messaging';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { supabase } from './supabase';
+import { withTimeout } from '../utils/timeout';
 
 const app: FirebaseApp = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 
@@ -110,16 +111,22 @@ export async function initFCMForegroundListener(onMessageReceived?: (payload: an
   }
 }
 
-// Test connectivity as per Firebase integration instructions
+// Test connectivity as per Firebase integration instructions lazily
 async function testConnection() {
   try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
+    await withTimeout(getDocFromServer(doc(db, 'test', 'connection')), 1000).catch(() => {});
   } catch (error) {
     if (error instanceof Error && error.message.includes('the client is offline')) {
       console.error('Please check your Firebase configuration.');
     }
   }
 }
-testConnection();
+// Run connection check lazily after boot
+if (typeof window !== 'undefined') {
+  setTimeout(() => {
+    testConnection().catch(() => {});
+  }, 2000);
+}
+
 
 export { app };

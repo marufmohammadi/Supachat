@@ -1,6 +1,7 @@
 import { generateE2EKeyPair } from '../lib/crypto';
 import { supabase } from '../lib/supabase';
 import { generatePublicKeyFingerprint } from '../features/device-verification/utils/deviceFingerprint';
+import { withTimeout } from '../utils/timeout';
 
 export interface KeyGenerationResult {
   success: boolean;
@@ -109,39 +110,34 @@ export async function generateAndSaveE2EEKeys({
       localStorage.setItem(`whatsapp_public_key_jwk_${userId}`, keys.publicKeyJWK);
       localStorage.setItem(`whatsapp_private_key_jwk_${userId}`, keys.privateKeyJWK);
 
-      // 3. Upload Public Key to database profile if not in sandbox mode
+      // 3. Upload Public Key to database profile asynchronously with timeout protection
       if (!isSandboxMode) {
-        const { data: existingProfile, error: checkError } = await supabase
-          .from('profiles')
-          .select('id')
-          .eq('id', userId)
-          .maybeSingle();
+        withTimeout(
+          (async () => {
+            const { data: existingProfile } = await supabase
+              .from('profiles')
+              .select('id')
+              .eq('id', userId)
+              .maybeSingle();
 
-        if (checkError) {
-          console.warn('[E2EE] Profile check warning during key generation:', checkError.message);
-        }
-
-        if (!existingProfile) {
-          const { error: insertError } = await supabase
-            .from('profiles')
-            .insert({
-              id: userId,
-              username: username || userEmail?.split('@')[0] || 'User',
-              avatar_url: avatarUrl || `https://api.dicebear.com/7.x/adventurer/svg?seed=${userId}`,
-              public_key: keys.publicKeyJWK,
-            });
-          if (insertError) {
-            console.warn('[E2EE] Profile insert warning during key generation:', insertError.message);
-          }
-        } else {
-          const { error: updateError } = await supabase
-            .from('profiles')
-            .update({ public_key: keys.publicKeyJWK })
-            .eq('id', userId);
-          if (updateError) {
-            console.warn('[E2EE] Profile update public key warning:', updateError.message);
-          }
-        }
+            if (!existingProfile) {
+              await supabase
+                .from('profiles')
+                .insert({
+                  id: userId,
+                  username: username || userEmail?.split('@')[0] || 'User',
+                  avatar_url: avatarUrl || `https://api.dicebear.com/7.x/adventurer/svg?seed=${userId}`,
+                  public_key: keys.publicKeyJWK,
+                });
+            } else {
+              await supabase
+                .from('profiles')
+                .update({ public_key: keys.publicKeyJWK })
+                .eq('id', userId);
+            }
+          })(),
+          2000
+        ).catch((syncErr) => console.warn('[E2EE] Background public key sync notice:', syncErr));
       }
 
       return {
