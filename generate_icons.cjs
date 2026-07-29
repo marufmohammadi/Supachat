@@ -1,51 +1,154 @@
 const fs = require('fs');
-const { execSync } = require('child_process');
+const path = require('path');
+const zlib = require('zlib');
 
-const standardSvg = `<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect width="512" height="512" rx="100" fill="#0F172A"/>
-  <circle cx="256" cy="256" r="190" fill="url(#emerald_grad)"/>
-  <circle cx="256" cy="256" r="186" stroke="#34D399" stroke-width="4" stroke-opacity="0.3" fill="none"/>
-  <path d="M156 200C156 155.817 191.817 120 236 120H276C320.183 120 356 155.817 356 200V240C356 284.183 320.183 320 276 320H220L156 376V200Z" fill="#FFFFFF"/>
-  <path d="M256 170C256 170 296 178 310 188V236C310 276 276 302 256 310C236 302 202 276 202 236V188C222 189 256 182 256 182Z" fill="#10B981"/>
-  <rect x="236" y="235" width="40" height="34" rx="6" fill="#FFFFFF"/>
-  <path d="M244 235V222C244 215.373 249.373 210 256 210C262.627 210 268 215.373 268 222V235" stroke="#FFFFFF" stroke-width="7" stroke-linecap="round" fill="none"/>
-  <circle cx="256" cy="250" r="4" fill="#10B981"/>
-  <path d="M256 254V260" stroke="#10B981" stroke-width="3" stroke-linecap="round"/>
-  <defs>
-    <linearGradient id="emerald_grad" x1="256" y1="66" x2="256" y2="446" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#059669"/>
-      <stop offset="1" stop-color="#047857"/>
-    </linearGradient>
-  </defs>
-</svg>`;
+function createCrcTable() {
+  const cTable = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) {
+      if (c & 1) c = 0xedb88320 ^ (c >>> 1);
+      else c = c >>> 1;
+    }
+    cTable[n] = c;
+  }
+  return cTable;
+}
 
-const maskableSvg = `<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect width="512" height="512" fill="#0F172A"/>
-  <circle cx="256" cy="256" r="160" fill="url(#emerald_grad_maskable)"/>
-  <circle cx="256" cy="256" r="156" stroke="#34D399" stroke-width="4" stroke-opacity="0.3" fill="none"/>
-  <path d="M172 208C172 170.445 202.445 140 240 140H272C309.555 140 340 170.445 340 208V242C340 279.555 309.555 310 272 310H226L172 358V208Z" fill="#FFFFFF"/>
-  <path d="M256 182C256 182 290 189 302 198V238C302 272 273 294 256 301C239 294 210 272 210 238V198C222 189 256 182 256 182Z" fill="#10B981"/>
-  <rect x="239" y="238" width="34" height="28" rx="5" fill="#FFFFFF"/>
-  <path d="M246 238V227C246 221.477 250.477 217 256 217C261.523 217 266 221.477 266 227V238" stroke="#FFFFFF" stroke-width="6" stroke-linecap="round" fill="none"/>
-  <circle cx="256" cy="250" r="3" fill="#10B981"/>
-  <defs>
-    <linearGradient id="emerald_grad_maskable" x1="256" y1="96" x2="256" y2="416" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#059669"/>
-      <stop offset="1" stop-color="#047857"/>
-    </linearGradient>
-  </defs>
-</svg>`;
+const crcTable = createCrcTable();
 
-fs.writeFileSync('temp_std.svg', standardSvg);
-fs.writeFileSync('temp_mask.svg', maskableSvg);
+function crc32(buf) {
+  let crc = 0xffffffff;
+  for (let i = 0; i < buf.length; i++) {
+    crc = crcTable[(crc ^ buf[i]) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
 
-execSync('ffmpeg -y -i temp_std.svg -s 512x512 public/icon-512.png');
-execSync('ffmpeg -y -i temp_std.svg -s 192x192 public/icon-192.png');
-execSync('ffmpeg -y -i temp_mask.svg -s 512x512 public/icon-maskable-512.png');
-execSync('ffmpeg -y -i temp_mask.svg -s 192x192 public/icon-maskable-192.png');
-execSync('ffmpeg -y -i public/icon-192.png -s 32x32 public/favicon.ico');
+function makeChunk(type, data) {
+  const len = data.length;
+  const buf = Buffer.alloc(12 + len);
+  buf.writeUInt32BE(len, 0);
+  buf.write(type, 4, 4, 'ascii');
+  data.copy(buf, 8);
+  const typeAndData = buf.subarray(4, 8 + len);
+  const crcVal = crc32(typeAndData);
+  buf.writeUInt32BE(crcVal, 8 + len);
+  return buf;
+}
 
-fs.unlinkSync('temp_std.svg');
-fs.unlinkSync('temp_mask.svg');
+function generateAppIconPng(width, height, isMaskable = false) {
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
-console.log('Successfully generated clean binary PNG icons!');
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; // Bit depth: 8
+  ihdr[9] = 6; // Color type: RGBA (6)
+  ihdr[10] = 0; // Compression
+  ihdr[11] = 0; // Filter
+  ihdr[12] = 0; // Interlace
+  const ihdrChunk = makeChunk('IHDR', ihdr);
+
+  const rowSize = 1 + width * 4;
+  const rawData = Buffer.alloc(height * rowSize);
+
+  const cx = width / 2;
+  const cy = height / 2;
+  const mainRadius = width * (isMaskable ? 0.38 : 0.42);
+
+  for (let y = 0; y < height; y++) {
+    const rowOffset = y * rowSize;
+    rawData[rowOffset] = 0; // No filter
+
+    for (let x = 0; x < width; x++) {
+      const px = rowOffset + 1 + x * 4;
+
+      // Dark Navy Background (#0F172A)
+      let r = 15, g = 23, b = 42, a = 255;
+
+      const dx = x - cx;
+      const dy = y - cy;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+
+      // Main Emerald Circle (#059669 -> #047857)
+      if (dist <= mainRadius) {
+        const factor = (y / height);
+        r = Math.round(5 + (4 - 5) * factor);
+        g = Math.round(150 + (120 - 150) * factor);
+        b = Math.round(105 + (87 - 105) * factor);
+
+        // White Chat Bubble
+        const bw = width * 0.20;
+        const bh = height * 0.15;
+        if (Math.abs(dx) < bw && Math.abs(dy + height * 0.03) < bh) {
+          r = 255; g = 255; b = 255;
+        }
+
+        // Tail of Speech Bubble
+        if (dx < -width * 0.08 && dx > -width * 0.20 && dy > height * 0.08 && dy < height * 0.20 && (dx - dy < -width * 0.04)) {
+          r = 255; g = 255; b = 255;
+        }
+
+        // Inner Shield/Lock motif in Emerald (#10B981)
+        if (Math.abs(dx) < width * 0.07 && Math.abs(dy + height * 0.03) < height * 0.07) {
+          r = 16; g = 185; b = 129;
+        }
+      }
+
+      rawData[px] = r;
+      rawData[px + 1] = g;
+      rawData[px + 2] = b;
+      rawData[px + 3] = a;
+    }
+  }
+
+  const compressed = zlib.deflateSync(rawData);
+  const idatChunk = makeChunk('IDAT', compressed);
+  const iendChunk = makeChunk('IEND', Buffer.alloc(0));
+
+  return Buffer.concat([signature, ihdrChunk, idatChunk, iendChunk]);
+}
+
+function createIcoFromPng(pngBuffer, width = 32, height = 32) {
+  const header = Buffer.alloc(6);
+  header.writeUInt16LE(0, 0); // Reserved
+  header.writeUInt16LE(1, 2); // Image type 1 = ICO
+  header.writeUInt16LE(1, 4); // Number of images
+
+  const directoryEntry = Buffer.alloc(16);
+  directoryEntry[0] = width >= 256 ? 0 : width;
+  directoryEntry[1] = height >= 256 ? 0 : height;
+  directoryEntry[2] = 0; // Color palette
+  directoryEntry[3] = 0; // Reserved
+  directoryEntry.writeUInt16LE(1, 4);  // Color planes
+  directoryEntry.writeUInt16LE(32, 6); // Bits per pixel
+  directoryEntry.writeUInt32LE(pngBuffer.length, 8); // Size of image data
+  directoryEntry.writeUInt32LE(22, 12); // Offset of image data (6 + 16 = 22)
+
+  return Buffer.concat([header, directoryEntry, pngBuffer]);
+}
+
+function main() {
+  const publicDir = path.join(__dirname, 'public');
+  if (!fs.existsSync(publicDir)) {
+    fs.mkdirSync(publicDir, { recursive: true });
+  }
+
+  const icon192 = generateAppIconPng(192, 192, false);
+  const icon512 = generateAppIconPng(512, 512, false);
+  const iconMaskable192 = generateAppIconPng(192, 192, true);
+  const iconMaskable512 = generateAppIconPng(512, 512, true);
+  const icon32 = generateAppIconPng(32, 32, false);
+  const faviconIco = createIcoFromPng(icon32, 32, 32);
+
+  fs.writeFileSync(path.join(publicDir, 'icon-192.png'), icon192);
+  fs.writeFileSync(path.join(publicDir, 'icon-512.png'), icon512);
+  fs.writeFileSync(path.join(publicDir, 'icon-maskable-192.png'), iconMaskable192);
+  fs.writeFileSync(path.join(publicDir, 'icon-maskable-512.png'), iconMaskable512);
+  fs.writeFileSync(path.join(publicDir, 'favicon.ico'), faviconIco);
+
+  console.log('✨ Generated pure binary PWA PNG & ICO icons successfully!');
+}
+
+main();

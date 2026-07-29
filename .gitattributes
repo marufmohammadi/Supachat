@@ -1,0 +1,7 @@
+# Enforce binary formatting for image files to prevent Git text/line-ending corruptions
+*.png binary
+*.ico binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
