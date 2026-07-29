@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { requestFCMToken, initFCMForegroundListener } from '../lib/firebase';
 
 export interface PushSubscriptionData {
   endpoint: string;
@@ -216,6 +217,14 @@ class PWAService {
             { onConflict: 'user_id,endpoint' }
           );
         }
+      }
+
+      // Also request and store Firebase Cloud Messaging (FCM) token
+      if (userId) {
+        requestFCMToken(userId, deviceId).catch((err) =>
+          console.warn('FCM token request fallback:', err)
+        );
+        initFCMForegroundListener();
       }
 
       return true;

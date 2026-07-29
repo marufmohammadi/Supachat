@@ -1,0 +1,34 @@
+{
+  "entities": {
+    "fcmToken": {
+      "title": "FCM Token",
+      "description": "Firebase Cloud Messaging Tokens for push notifications",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "User ID associated with token"
+        },
+        "token": {
+          "type": "string",
+          "description": "FCM registration token"
+        },
+        "deviceId": {
+          "type": "string",
+          "description": "Device identifier"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["userId", "token", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/fcm_tokens/{tokenId}": {
+      "schema": "fcmToken",
+      "description": "Stores user FCM device registration tokens for push notifications"
+    }
+  }
+}

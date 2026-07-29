@@ -763,4 +763,162 @@ BEGIN
   END IF;
 END $$;
 
+-- 15. WEB PUSH NOTIFICATION TRIGGERS & EDGE FUNCTIONS DISPATCHERS
+DO $$
+BEGIN
+  -- Attempt to enable pg_net extension (Supabase HTTP extension)
+  BEGIN
+    CREATE EXTENSION IF NOT EXISTS "pg_net";
+  EXCEPTION WHEN OTHERS THEN
+    BEGIN
+      CREATE EXTENSION IF NOT EXISTS "net";
+    EXCEPTION WHEN OTHERS THEN
+      RAISE NOTICE 'pg_net or net extension is not installed on this PostgreSQL instance. You can configure Supabase Database Webhooks via Supabase Dashboard -> Database -> Webhooks.';
+    END;
+  END;
+END $$;
+
+-- Message Push Trigger Function (Safe check for net schema / functions)
+CREATE OR REPLACE FUNCTION public.handle_message_push_trigger()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  supabase_url TEXT := current_setting('custom.supabase_url', true);
+  service_role_key TEXT := current_setting('custom.service_role_key', true);
+BEGIN
+  IF supabase_url IS NULL OR supabase_url = '' THEN
+    supabase_url := 'https://YOUR_SUPABASE_PROJECT_ID.supabase.co';
+  END IF;
+
+  -- Use net.http_post if net extension is available
+  IF EXISTS (SELECT 1 FROM pg_extension WHERE extname IN ('pg_net', 'net')) THEN
+    PERFORM net.http_post(
+      url := supabase_url || '/functions/v1/send-message-push',
+      headers := jsonb_build_object(
+        'Content-Type', 'application/json',
+        'Authorization', 'Bearer ' || COALESCE(service_role_key, '')
+      ),
+      body := jsonb_build_object(
+        'type', TG_OP,
+        'record', row_to_json(NEW)
+      )
+    );
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trigger_message_web_push ON public.messages;
+CREATE TRIGGER trigger_message_web_push
+  AFTER INSERT ON public.messages
+  FOR EACH ROW
+  EXECUTE FUNCTION public.handle_message_push_trigger();
+
+-- Call Push Trigger Function
+CREATE OR REPLACE FUNCTION public.handle_call_push_trigger()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  supabase_url TEXT := current_setting('custom.supabase_url', true);
+  service_role_key TEXT := current_setting('custom.service_role_key', true);
+BEGIN
+  IF supabase_url IS NULL OR supabase_url = '' THEN
+    supabase_url := 'https://YOUR_SUPABASE_PROJECT_ID.supabase.co';
+  END IF;
+
+  -- Execute HTTP POST via net extension if enabled
+  IF EXISTS (SELECT 1 FROM pg_extension WHERE extname IN ('pg_net', 'net')) THEN
+    -- Trigger send-call-push when status is initiated or ringing
+    IF (NEW.status = 'ringing' OR NEW.status = 'initiated') THEN
+      PERFORM net.http_post(
+        url := supabase_url || '/functions/v1/send-call-push',
+        headers := jsonb_build_object(
+          'Content-Type', 'application/json',
+          'Authorization', 'Bearer ' || COALESCE(service_role_key, '')
+        ),
+        body := jsonb_build_object(
+          'type', TG_OP,
+          'record', row_to_json(NEW)
+        )
+      );
+    ELSIF (NEW.status IN ('ended', 'rejected', 'cancelled')) THEN
+      PERFORM net.http_post(
+        url := supabase_url || '/functions/v1/send-call-ended-push',
+        headers := jsonb_build_object(
+          'Content-Type', 'application/json',
+          'Authorization', 'Bearer ' || COALESCE(service_role_key, '')
+        ),
+        body := jsonb_build_object(
+          'type', TG_OP,
+          'record', row_to_json(NEW)
+        )
+      );
+    ELSIF (NEW.status = 'missed') THEN
+      PERFORM net.http_post(
+        url := supabase_url || '/functions/v1/send-missed-call-push',
+        headers := jsonb_build_object(
+          'Content-Type', 'application/json',
+          'Authorization', 'Bearer ' || COALESCE(service_role_key, '')
+        ),
+        body := jsonb_build_object(
+          'type', TG_OP,
+          'record', row_to_json(NEW)
+        )
+      );
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trigger_call_web_push ON public.calls;
+CREATE TRIGGER trigger_call_web_push
+  AFTER INSERT OR UPDATE ON public.calls
+  FOR EACH ROW
+  EXECUTE FUNCTION public.handle_call_push_trigger();
+
+-- Call Log (Missed Call) Push Trigger Function
+CREATE OR REPLACE FUNCTION public.handle_call_log_push_trigger()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  supabase_url TEXT := current_setting('custom.supabase_url', true);
+  service_role_key TEXT := current_setting('custom.service_role_key', true);
+BEGIN
+  IF supabase_url IS NULL OR supabase_url = '' THEN
+    supabase_url := 'https://YOUR_SUPABASE_PROJECT_ID.supabase.co';
+  END IF;
+
+  IF (NEW.status = 'missed') THEN
+    IF EXISTS (SELECT 1 FROM pg_extension WHERE extname IN ('pg_net', 'net')) THEN
+      PERFORM net.http_post(
+        url := supabase_url || '/functions/v1/send-missed-call-push',
+        headers := jsonb_build_object(
+          'Content-Type', 'application/json',
+          'Authorization', 'Bearer ' || COALESCE(service_role_key, '')
+        ),
+        body := jsonb_build_object(
+          'type', TG_OP,
+          'record', row_to_json(NEW)
+        )
+      );
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trigger_call_log_web_push ON public.call_logs;
+CREATE TRIGGER trigger_call_log_web_push
+  AFTER INSERT ON public.call_logs
+  FOR EACH ROW
+  EXECUTE FUNCTION public.handle_call_log_push_trigger();
 `;
