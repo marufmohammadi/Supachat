@@ -498,6 +498,27 @@ export const signalingService = {
       )
       .subscribe((status) => {
         console.log(`[CALLS] Incoming calls subscription status for ${userId}:`, status);
+        if (status === 'SUBSCRIBED') {
+          // Catch-up query for pending ringing calls in case subscription connected after call creation
+          const sixtySecsAgo = new Date(Date.now() - 60000).toISOString();
+          Promise.resolve(
+            supabase
+              .from('calls')
+              .select('*')
+              .eq('receiver_id', userId)
+              .eq('status', 'ringing')
+              .gte('started_at', sixtySecsAgo)
+              .order('started_at', { ascending: false })
+              .limit(1)
+          ).then(({ data, error }) => {
+            if (!error && data && data.length > 0) {
+              console.log(`[CALLS] Catch-up query found pending ringing call: ${data[0].id}`);
+              onCall(data[0] as Call);
+            }
+          }).catch((err) => {
+            console.warn('[CALLS] Catch-up query failed:', err);
+          });
+        }
       });
 
     return () => {

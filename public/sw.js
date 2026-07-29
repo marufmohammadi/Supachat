@@ -127,18 +127,22 @@ self.addEventListener('push', (event) => {
   }
 
   const title = data.title || 'SupaChat';
+  const isCall = data.type === 'incoming_call' || (data.data && data.data.type === 'incoming_call');
+  const callId = data.callId || (data.data && data.data.callId);
+
   const options = {
-    body: data.body || 'You have a new encrypted notification',
+    body: data.body || (isCall ? 'Incoming call...' : 'You have a new encrypted notification'),
     icon: data.icon || '/icon-192.png',
     badge: data.badge || '/icon-192.png',
-    tag: data.tag || (data.chatId ? `chat-${data.chatId}` : 'supachat-notification'),
+    tag: isCall ? `call-${callId || Date.now()}` : (data.tag || (data.chatId ? `chat-${data.chatId}` : 'supachat-notification')),
     renotify: true,
-    data: data.data || { url: data.url || '/' },
+    data: data.data || { url: data.url || '/', callId, chatId: data.chatId, type: data.type },
+    vibrate: isCall ? [1000, 500, 1000, 500] : [200, 100, 200],
     actions: data.actions || []
   };
 
   // If incoming call, add Call Action buttons
-  if (data.type === 'incoming_call') {
+  if (isCall) {
     options.requireInteraction = true;
     options.actions = [
       { action: 'accept', title: '📞 Answer' },
@@ -153,9 +157,17 @@ self.addEventListener('push', (event) => {
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   const notificationData = event.notification.data || {};
-  const callId = event.notification.tag ? event.notification.tag.replace('call-', '') : null;
+  const tagCallId = (event.notification.tag && event.notification.tag.startsWith('call-'))
+    ? event.notification.tag.replace('call-', '')
+    : null;
+  const callId = notificationData.callId || tagCallId;
+  const action = event.action;
 
-  if (event.action === 'accept') {
+  // Determine if this is a call notification
+  const isCallNotification = Boolean(callId || notificationData.type === 'incoming_call' || (event.notification.tag && event.notification.tag.startsWith('call-')));
+
+  if (action === 'accept' || (isCallNotification && !action)) {
+    // Answer / Accept call or body click on call notification
     event.waitUntil(
       self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
         for (const client of clientList) {
@@ -167,11 +179,12 @@ self.addEventListener('notificationclick', (event) => {
           }
         }
         if (self.clients.openWindow) {
-          return self.clients.openWindow(`/?action=accept&callId=${callId}`);
+          return self.clients.openWindow(`/?action=accept&callId=${callId || ''}`);
         }
       })
     );
-  } else if (event.action === 'reject') {
+  } else if (action === 'reject' || action === 'decline') {
+    // Decline call
     event.waitUntil(
       self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
         for (const client of clientList) {
@@ -183,11 +196,12 @@ self.addEventListener('notificationclick', (event) => {
           }
         }
         if (self.clients.openWindow) {
-          return self.clients.openWindow(`/?action=reject&callId=${callId}`);
+          return self.clients.openWindow(`/?action=reject&callId=${callId || ''}`);
         }
       })
     );
   } else {
+    // Message / Chat Notification
     const targetUrl = notificationData.url || '/';
     event.waitUntil(
       self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {

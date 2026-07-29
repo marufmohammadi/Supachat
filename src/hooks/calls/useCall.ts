@@ -3,6 +3,7 @@ import { signalingService } from '../../services/signaling';
 import { Call, CallSignal, CallStatus, CallType, Profile } from '../../types/calls';
 import { supabase } from '../../lib/supabase';
 import { OneToOneWebRTCManager } from '../../services/webrtc/one-to-one';
+import { ringtoneManager } from '../../utils/ringtone';
 
 // Helper to create simulated media stream when hardware/permission is missing or denied
 function createMockMediaStream(video: boolean): MediaStream {
@@ -151,6 +152,7 @@ export function useCall({ currentUserId, currentUserProfile, onCallEvent }: UseC
    */
   const cleanupCallResources = useCallback((force = false) => {
     console.log('[CALLS] cleanupCallResources executed');
+    ringtoneManager.stopRingtone();
     if (isCallEndingRef.current && !force) {
       console.log('[CALLS] Shared cleanup function already in progress, skipping duplicate.');
       return;
@@ -737,10 +739,14 @@ export function useCall({ currentUserId, currentUserProfile, onCallEvent }: UseC
   /**
    * Accepts an incoming call
    */
-  const acceptCall = useCallback(async () => {
-    if (!activeCall || callRole !== 'receiver') return;
+  const acceptCall = useCallback(async (callToAccept?: Call) => {
+    ringtoneManager.stopRingtone();
+    const targetCall = callToAccept || activeCall;
+    if (!targetCall) return;
 
-    console.log('[CALLS] Accepting incoming call:', activeCall.id);
+    console.log('[CALLS] Accepting incoming call:', targetCall.id);
+    setActiveCall(targetCall);
+    setCallRole('receiver');
     setCallError(null);
 
     let mediaStream: MediaStream | null = null;
@@ -748,7 +754,7 @@ export function useCall({ currentUserId, currentUserProfile, onCallEvent }: UseC
       // 1. Get media devices permissions
       const constraints = {
         audio: true,
-        video: activeCall.call_type === 'video' ? { facingMode: 'user' } : false
+        video: targetCall.call_type === 'video' ? { facingMode: 'user' } : false
       };
       
       mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -762,7 +768,7 @@ export function useCall({ currentUserId, currentUserProfile, onCallEvent }: UseC
     } catch (err) {
       console.warn('[CALLS] Media device access denied during accept. Falling back to simulated media stream:', err);
       // Fallback to simulated media stream
-      mediaStream = createMockMediaStream(activeCall.call_type === 'video');
+      mediaStream = createMockMediaStream(targetCall.call_type === 'video');
       localStreamRef.current = mediaStream;
       setLocalStream(mediaStream);
       
@@ -774,7 +780,7 @@ export function useCall({ currentUserId, currentUserProfile, onCallEvent }: UseC
 
     try {
       // 2. Update status in database to 'accepted'
-      const updatedCall = await signalingService.updateCallStatus(activeCall.id, 'accepted', {
+      const updatedCall = await signalingService.updateCallStatus(targetCall.id, 'accepted', {
         started_at: new Date().toISOString()
       });
       setActiveCall(updatedCall);
@@ -809,17 +815,57 @@ export function useCall({ currentUserId, currentUserProfile, onCallEvent }: UseC
       cleanupCallResources();
       setActiveCall(null);
     }
-  }, [activeCall, callRole, setupPeerConnection, handleIncomingSignal, endCall, cleanupCallResources]);
+  }, [activeCall, setupPeerConnection, handleIncomingSignal, cleanupCallResources]);
 
   /**
    * Rejects an incoming call
    */
-  const rejectCall = useCallback(async () => {
-    if (!activeCall || callRole !== 'receiver') return;
+  const rejectCall = useCallback(async (callToReject?: Call) => {
+    ringtoneManager.stopRingtone();
+    const targetCall = callToReject || activeCall;
+    if (!targetCall) return;
 
-    console.log('[CALLS] Rejecting incoming call:', activeCall.id);
+    console.log('[CALLS] Rejecting incoming call:', targetCall.id);
     await endCall('rejected');
-  }, [activeCall, callRole, endCall]);
+  }, [activeCall, endCall]);
+
+  /**
+   * Handles action triggered by Service Worker or URL params with callId
+   */
+  const handleCallActionById = useCallback(async (action: 'accept' | 'reject', callId?: string) => {
+    ringtoneManager.stopRingtone();
+    if (callId) {
+      try {
+        const { data: fetchedCall } = await supabase
+          .from('calls')
+          .select('*')
+          .eq('id', callId)
+          .single();
+
+        if (fetchedCall) {
+          if (action === 'accept') {
+            await acceptCall(fetchedCall as Call);
+            return;
+          } else {
+            await signalingService.updateCallStatus(callId, 'rejected');
+            await signalingService.sendSignal(callId, currentUserId, 'hangup', { reason: 'user_rejected' }).catch(() => {});
+            await signalingService.logCall(fetchedCall.caller_id, fetchedCall.receiver_id, fetchedCall.call_type, 'rejected', 0).catch(() => {});
+            cleanupCallResources(true);
+            loadCallHistory();
+            return;
+          }
+        }
+      } catch (err) {
+        console.warn('[CALLS] Failed to fetch call for background action:', err);
+      }
+    }
+
+    if (action === 'accept') {
+      acceptCall();
+    } else {
+      rejectCall();
+    }
+  }, [acceptCall, rejectCall, currentUserId, cleanupCallResources, loadCallHistory]);
 
   /**
    * Triggers a native system push notification for incoming calls
@@ -990,10 +1036,8 @@ export function useCall({ currentUserId, currentUserProfile, onCallEvent }: UseC
       if (event.data && event.data.type === 'CALL_ACTION') {
         const { action, callId } = event.data;
         console.log(`[PUSH] Call action postMessage received from Service Worker: ${action} for call ${callId}`);
-        if (action === 'accept') {
-          acceptCall();
-        } else if (action === 'reject') {
-          rejectCall();
+        if (action === 'accept' || action === 'reject') {
+          handleCallActionById(action, callId);
         }
       }
     };
@@ -1001,7 +1045,7 @@ export function useCall({ currentUserId, currentUserProfile, onCallEvent }: UseC
     return () => {
       navigator.serviceWorker?.removeEventListener('message', handleServiceWorkerMessage);
     };
-  }, [acceptCall, rejectCall]);
+  }, [handleCallActionById]);
 
   // Parse URL query parameters for actions on start if opened from notification click
   useEffect(() => {
@@ -1013,13 +1057,11 @@ export function useCall({ currentUserId, currentUserProfile, onCallEvent }: UseC
       // Clean query params so they don't trigger repeatedly on reload
       window.history.replaceState({}, document.title, window.location.pathname);
       
-      if (action === 'accept') {
-        acceptCall();
-      } else if (action === 'reject') {
-        rejectCall();
+      if (action === 'accept' || action === 'reject') {
+        handleCallActionById(action, callId);
       }
     }
-  }, [acceptCall, rejectCall]);
+  }, [handleCallActionById]);
 
   // Handle browser window unload safely
   useEffect(() => {

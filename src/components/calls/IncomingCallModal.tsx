@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { motion } from 'motion/react';
 import { Phone, PhoneOff, Video } from 'lucide-react';
 import { Call, Profile } from '../../types/calls';
+import { ringtoneManager } from '../../utils/ringtone';
 
 interface IncomingCallModalProps {
   call: Call;
@@ -19,6 +20,23 @@ export const IncomingCallModal: React.FC<IncomingCallModalProps> = ({
   const isVideo = call.call_type === 'video';
   const username = caller?.username || 'Unknown User';
   const avatarUrl = caller?.avatar_url || `https://api.dicebear.com/7.x/adventurer/svg?seed=${call.caller_id}`;
+
+  useEffect(() => {
+    ringtoneManager.playRingtone();
+    return () => {
+      ringtoneManager.stopRingtone();
+    };
+  }, []);
+
+  const handleAcceptClick = () => {
+    ringtoneManager.stopRingtone();
+    onAccept();
+  };
+
+  const handleRejectClick = () => {
+    ringtoneManager.stopRingtone();
+    onReject();
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
@@ -62,7 +80,7 @@ export const IncomingCallModal: React.FC<IncomingCallModalProps> = ({
           {/* Decline Button */}
           <button
             id="decline-call-btn"
-            onClick={onReject}
+            onClick={handleRejectClick}
             className="w-14 h-14 bg-red-600 hover:bg-red-700 text-white rounded-full flex items-center justify-center shadow-lg hover:shadow-red-600/20 active:scale-95 transition-all cursor-pointer"
             title="Decline Call"
           >
@@ -72,7 +90,7 @@ export const IncomingCallModal: React.FC<IncomingCallModalProps> = ({
           {/* Accept Button */}
           <button
             id="accept-call-btn"
-            onClick={onAccept}
+            onClick={handleAcceptClick}
             className="w-14 h-14 bg-emerald-500 hover:bg-emerald-600 text-white rounded-full flex items-center justify-center shadow-lg hover:shadow-emerald-500/20 active:scale-95 transition-all cursor-pointer"
             title="Accept Call"
           >

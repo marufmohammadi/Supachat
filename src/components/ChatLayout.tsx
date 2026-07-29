@@ -5,7 +5,7 @@ import {
   MoreVertical, Settings, Star, Bell, Palette, HelpCircle, Smartphone, Download
 } from 'lucide-react';
 import { pwaService } from '../services/pwaService';
-import { useDeviceVerification, LinkedDevicesModal, LoginApprovalModal } from '../features/device-verification';
+import { useDeviceVerification, LinkedDevicesModal, LoginApprovalModal, getDeviceFingerprintDetails } from '../features/device-verification';
 import { supabase, testSupabaseConnection } from '../lib/supabase';
 import { encryptMessage, decryptMessage, importPublicKey } from '../lib/crypto';
 import { checkHasLocalKeys, autoGenerateKeysWithRetry } from '../services/e2eeService';
@@ -1321,8 +1321,14 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
         body: decrypted.substring(0, 100) + (decrypted.length > 100 ? '...' : ''),
         icon: avatar,
         badge: avatar,
-        tag: msg.group_id || msg.sender_id,
-        renotify: true
+        tag: msg.group_id ? `group-${msg.group_id}` : `direct-${msg.sender_id}`,
+        renotify: true,
+        data: {
+          url: '/',
+          chatId: chatTarget.id,
+          chatType: chatTarget.type,
+          type: 'message'
+        }
       };
 
       if ('serviceWorker' in navigator) {
@@ -1750,12 +1756,33 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
             waiting: !!reg.waiting,
             installing: !!reg.installing
           });
+          if (currentUserId) {
+            pwaService.setupPushNotifications(currentUserId, getDeviceFingerprintDetails(currentUserId).device_id)
+              .catch((err) => console.warn('[PWA] Push setup error:', err));
+          }
         })
         .catch((err) => {
           console.warn('[AUDIT] notification setup - Service Worker registration failed:', err);
         });
     }
-  }, [isSandboxMode]);
+  }, [isSandboxMode, currentUserId]);
+
+  // SW Message listener for NAVIGATE_CHAT events
+  useEffect(() => {
+    const handleServiceWorkerMessage = (event: MessageEvent) => {
+      if (event.data && event.data.type === 'NAVIGATE_CHAT') {
+        const { chatId, chatType } = event.data;
+        if (chatId && chatType) {
+          console.log(`[PWA] NAVIGATE_CHAT received from SW: ${chatType} - ${chatId}`);
+          setActiveChat({ type: chatType, id: chatId });
+        }
+      }
+    };
+    navigator.serviceWorker?.addEventListener('message', handleServiceWorkerMessage);
+    return () => {
+      navigator.serviceWorker?.removeEventListener('message', handleServiceWorkerMessage);
+    };
+  }, []);
 
   // Scroll to bottom when messages update
   useEffect(() => {

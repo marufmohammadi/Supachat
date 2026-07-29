@@ -1,6 +1,7 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect } from 'react';
 import { Phone, PhoneOff, Video } from 'lucide-react';
 import { CallRoom } from '../../types/group-call';
+import { ringtoneManager } from '../../utils/ringtone';
 
 interface IncomingGroupCallModalProps {
   room: CallRoom;
@@ -17,32 +18,22 @@ export const IncomingGroupCallModal: React.FC<IncomingGroupCallModalProps> = ({
   onAccept,
   onReject
 }) => {
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-
-  // Auto-play generic ringing feedback sound safely
   useEffect(() => {
-    try {
-      const ringSound = new Audio('https://assets.mixkit.co/active_storage/sfx/1359/1359-84.wav');
-      ringSound.loop = true;
-      audioRef.current = ringSound;
-      
-      const playPromise = ringSound.play();
-      if (playPromise !== undefined) {
-        playPromise.catch((error) => {
-          console.log('[GROUP-CALL] Audio autoplay was blocked by browser policies:', error);
-        });
-      }
-    } catch (err) {
-      console.warn('[GROUP-CALL] Ring audio could not be initialized:', err);
-    }
-
+    ringtoneManager.playRingtone();
     return () => {
-      if (audioRef.current) {
-        audioRef.current.pause();
-        audioRef.current = null;
-      }
+      ringtoneManager.stopRingtone();
     };
   }, []);
+
+  const handleAcceptClick = () => {
+    ringtoneManager.stopRingtone();
+    onAccept(room);
+  };
+
+  const handleRejectClick = () => {
+    ringtoneManager.stopRingtone();
+    onReject();
+  };
 
   return (
     <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-fade-in">
@@ -74,7 +65,7 @@ export const IncomingGroupCallModal: React.FC<IncomingGroupCallModalProps> = ({
           {/* Decline button */}
           <button
             id="reject-group-call-btn"
-            onClick={onReject}
+            onClick={handleRejectClick}
             className="flex h-14 w-14 items-center justify-center rounded-full bg-red-600 hover:bg-red-500 text-white shadow-lg shadow-red-900/30 transition-all hover:scale-105 active:scale-95 cursor-pointer"
             title="Decline"
           >
@@ -84,7 +75,7 @@ export const IncomingGroupCallModal: React.FC<IncomingGroupCallModalProps> = ({
           {/* Accept button */}
           <button
             id="accept-group-call-btn"
-            onClick={() => onAccept(room)}
+            onClick={handleAcceptClick}
             className="flex h-14 w-14 items-center justify-center rounded-full bg-emerald-500 hover:bg-emerald-400 text-white shadow-lg shadow-emerald-900/30 transition-all hover:scale-105 active:scale-95 cursor-pointer"
             title="Accept"
           >
