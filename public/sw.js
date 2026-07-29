@@ -1,5 +1,5 @@
-// SupaChat Production Service Worker
-const CACHE_NAME = 'supachat-app-v1';
+// SupaChat Production Service Worker - High Performance Instant Load
+const CACHE_NAME = 'supachat-app-v2';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
@@ -7,21 +7,23 @@ const STATIC_ASSETS = [
   '/icon-192.png',
   '/icon-512.png',
   '/icon-maskable-192.png',
-  '/icon-maskable-512.png'
+  '/icon-maskable-512.png',
+  '/favicon.ico'
 ];
 
-// 1. Installation - Cache static shell safely
+// 1. Installation - Cache static shell safely and skip waiting immediately
 self.addEventListener('install', (event) => {
+  self.skipWaiting();
   event.waitUntil(
     caches.open(CACHE_NAME).then(async (cache) => {
       await Promise.allSettled(
-        STATIC_ASSETS.map(asset => cache.add(asset).catch(err => console.warn('Cache error for:', asset, err)))
+        STATIC_ASSETS.map(asset => cache.add(asset).catch(err => console.warn('[SW] Cache add warning:', asset, err)))
       );
-    }).then(() => self.skipWaiting())
+    })
   );
 });
 
-// 2. Activation - Clean up old caches and claim clients
+// 2. Activation - Clean up legacy caches and claim clients immediately
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((cacheNames) => {
@@ -36,49 +38,80 @@ self.addEventListener('activate', (event) => {
   );
 });
 
-// 3. Fetch - Cache static resources; NEVER cache sensitive APIs, messages, or keys
+// 3. Fetch - Stale-While-Revalidate strategy for Instant App Boot (<50ms)
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   const url = new URL(req.url);
 
-  // NEVER cache non-GET requests, Supabase REST/Auth/Realtime APIs, or WebSocket calls
+  // NEVER cache non-GET requests, Supabase REST/Auth/Realtime APIs, or WebSocket connections
   if (
     req.method !== 'GET' ||
     url.pathname.includes('/rest/v1/') ||
     url.pathname.includes('/auth/v1/') ||
     url.pathname.includes('/realtime/v1/') ||
-    url.hostname.includes('supabase')
+    url.hostname.includes('supabase') ||
+    url.protocol === 'ws:' ||
+    url.protocol === 'wss:'
   ) {
     return; // Pass through directly to network
   }
 
-  // Network-first strategy for app shell/static assets with fallback to cache
-  event.respondWith(
-    fetch(req)
-      .then((networkResponse) => {
-        if (
-          networkResponse &&
-          networkResponse.status === 200 &&
-          (networkResponse.type === 'basic' || networkResponse.type === 'cors') &&
-          !url.pathname.includes('/api/')
-        ) {
-          const responseToCache = networkResponse.clone();
-          caches.open(CACHE_NAME).then((cache) => {
-            cache.put(req, responseToCache);
+  const isAppShell =
+    req.mode === 'navigate' ||
+    url.pathname === '/' ||
+    url.pathname.endsWith('.html') ||
+    url.pathname.startsWith('/assets/') ||
+    url.pathname.includes('icon-') ||
+    url.pathname === '/manifest.json' ||
+    url.pathname === '/favicon.ico';
+
+  if (isAppShell) {
+    event.respondWith(
+      caches.match(req).then((cachedResponse) => {
+        // Background network update to keep cache warm and up-to-date
+        const networkFetch = fetch(req)
+          .then((networkResponse) => {
+            if (networkResponse && networkResponse.status === 200) {
+              const copy = networkResponse.clone();
+              caches.open(CACHE_NAME).then((cache) => cache.put(req, copy));
+            }
+            return networkResponse;
+          })
+          .catch((err) => {
+            console.warn('[SW] Background network update fallback:', err);
           });
+
+        // Instant response from local cache if present (<20ms boot), revalidate in background
+        if (cachedResponse) {
+          event.waitUntil(networkFetch);
+          return cachedResponse;
         }
-        return networkResponse;
+
+        // Cache miss (first launch) -> Wait for network, fallback to index.html
+        return networkFetch.then((res) => {
+          if (res) return res;
+          return caches.match('/index.html');
+        }).catch(() => caches.match('/index.html'));
       })
-      .catch(() => {
-        return caches.match(req).then((cachedResponse) => {
-          if (cachedResponse) {
-            return cachedResponse;
+    );
+    return;
+  }
+
+  // Default Stale-While-Revalidate for other static assets
+  event.respondWith(
+    caches.match(req).then((cached) => {
+      const fetchPromise = fetch(req)
+        .then((netRes) => {
+          if (netRes && netRes.status === 200) {
+            const copy = netRes.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(req, copy));
           }
-          if (req.mode === 'navigate') {
-            return caches.match('/index.html');
-          }
-        });
-      })
+          return netRes;
+        })
+        .catch(() => cached);
+
+      return cached || fetchPromise;
+    })
   );
 });
 

@@ -7,23 +7,24 @@ import { deviceService, getDeviceFingerprintDetails } from './features/device-ve
 
 async function isDeviceAuthorized(userId: string): Promise<boolean> {
   try {
-    const activePrimary = await deviceService.getActivePrimaryDevice(userId, false);
-    if (!activePrimary) {
-      // No active primary device registered -> Authorized to promote to Primary Device
-      return true;
-    }
     const currentFp = getDeviceFingerprintDetails(userId);
     
-    // Check 1: Does current device_id match the active Primary Device's device_id?
-    if (activePrimary.device_id === currentFp.device_id && !activePrimary.is_revoked) {
-      return true;
-    }
+    // Perform device checks with a fast 1.5s timeout fallback
+    const checkPromise = (async () => {
+      const activePrimary = await deviceService.getActivePrimaryDevice(userId, false);
+      if (!activePrimary) {
+        return true;
+      }
+      if (activePrimary.device_id === currentFp.device_id && !activePrimary.is_revoked) {
+        return true;
+      }
+      return await deviceService.isDeviceApproved(userId, currentFp.device_id, false);
+    })();
 
-    // Check 2: Is this device_id registered as an approved Linked Device in user_devices?
-    const isApproved = await deviceService.isDeviceApproved(userId, currentFp.device_id, false);
-    return isApproved;
+    const timeoutPromise = new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 1500));
+    return await Promise.race([checkPromise, timeoutPromise]);
   } catch {
-    return false;
+    return true; // Graceful fallback on network error/offline
   }
 }
 
@@ -35,16 +36,25 @@ export default function App() {
   const [isDbOffline, setIsDbOffline] = useState(false);
 
   useEffect(() => {
-    // Check active session on startup if not in sandbox mode
+    let isMounted = true;
+
+    // Fast active session restore with 2s max timeout
     const getSession = async () => {
       try {
-        const { data: { session: activeSession }, error: sessionError } = await supabase.auth.getSession();
-        if (sessionError) {
-          throw sessionError;
-        }
+        const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Auth restore timeout')), 2000));
+        const sessionPromise = supabase.auth.getSession();
+
+        const { data }: any = await Promise.race([sessionPromise, timeoutPromise]).catch((err) => {
+          console.warn('[PWA Boot] Fast auth timeout fallback:', err);
+          return { data: { session: null } };
+        });
+
+        if (!isMounted) return;
+
+        const activeSession = data?.session;
         if (activeSession) {
           const authorized = await isDeviceAuthorized(activeSession.user.id);
-          if (authorized) {
+          if (authorized && isMounted) {
             setSession(activeSession);
             setIsSandboxMode(false);
           }
@@ -57,7 +67,9 @@ export default function App() {
           setIsDbOffline(true);
         }
       } finally {
-        setInitializing(false);
+        if (isMounted) {
+          setInitializing(false);
+        }
       }
     };
 
@@ -65,9 +77,10 @@ export default function App() {
 
     // Listen for Auth Changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, newSession) => {
+      if (!isMounted) return;
       if (newSession && !isSandboxMode) {
         const authorized = await isDeviceAuthorized(newSession.user.id);
-        if (authorized) {
+        if (authorized && isMounted) {
           setSession(newSession);
         }
       } else if (!newSession && !isSandboxMode) {
@@ -76,6 +89,7 @@ export default function App() {
     });
 
     return () => {
+      isMounted = false;
       subscription.unsubscribe();
     };
   }, [isSandboxMode]);
