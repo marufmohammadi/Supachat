@@ -451,6 +451,195 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
     isTypingBroadcastingRef.current = false;
   }, [activeChat]);
 
+  // Android Hardware & Browser Back Button Navigation Manager
+  const [showExitToast, setShowExitToast] = useState(false);
+  const exitToastTimeoutRef = useRef<any>(null);
+  const lastExitTapRef = useRef<number>(0);
+  const isPoppingHistoryRef = useRef<boolean>(false);
+  const prevActiveLayersCountRef = useRef<number>(0);
+
+  const triggerExitToast = () => {
+    setShowExitToast(true);
+    if (exitToastTimeoutRef.current) clearTimeout(exitToastTimeoutRef.current);
+    exitToastTimeoutRef.current = setTimeout(() => {
+      setShowExitToast(false);
+    }, 2000);
+  };
+
+  const activeLayersCount = [
+    Boolean(viewOnceActiveMsg),
+    Boolean(showDisappearingModal),
+    Boolean(showProfileModal),
+    Boolean(showLinkedDevicesModal),
+    Boolean(showCallHistory),
+    Boolean(showKeyManager),
+    Boolean(showNewGroupModal),
+    Boolean(showNewDirectChatModal),
+    Boolean(showWalkieTalkieConfirm),
+    Boolean(showOverflowMenu),
+    Boolean(e2eeExplainer),
+    Boolean(popupNotification),
+    Boolean(pendingLoginRequest),
+    Boolean(newDeviceAlert),
+    Boolean(searchQuery && searchQuery.trim().length > 0),
+    Boolean(activeChat !== null),
+    Boolean(navTab !== 'chats'),
+  ].filter(Boolean).length;
+
+  const closeTopmostLayer = (): boolean => {
+    if (viewOnceActiveMsg) {
+      if (typeof handleDestroyViewOnce === 'function') {
+        handleDestroyViewOnce(viewOnceActiveMsg);
+      } else {
+        setViewOnceActiveMsg(null);
+      }
+      return true;
+    }
+    if (showDisappearingModal) {
+      setShowDisappearingModal(false);
+      return true;
+    }
+    if (showLinkedDevicesModal) {
+      closeLinkedDevicesModal();
+      return true;
+    }
+    if (showProfileModal) {
+      setShowProfileModal(false);
+      return true;
+    }
+    if (showCallHistory) {
+      setShowCallHistory(false);
+      return true;
+    }
+    if (showKeyManager) {
+      setShowKeyManager(false);
+      return true;
+    }
+    if (showNewGroupModal) {
+      setShowNewGroupModal(false);
+      return true;
+    }
+    if (showNewDirectChatModal) {
+      setShowNewDirectChatModal(false);
+      return true;
+    }
+    if (showWalkieTalkieConfirm) {
+      setShowWalkieTalkieConfirm(false);
+      setWalkieTalkieConfirmGroupId(null);
+      return true;
+    }
+    if (showOverflowMenu) {
+      setShowOverflowMenu(false);
+      return true;
+    }
+    if (e2eeExplainer) {
+      setE2eeExplainer(null);
+      return true;
+    }
+    if (popupNotification) {
+      setPopupNotification(null);
+      return true;
+    }
+    if (pendingLoginRequest) {
+      declineRequest();
+      return true;
+    }
+    if (newDeviceAlert) {
+      dismissDeviceAlert();
+      return true;
+    }
+    if (searchQuery && searchQuery.trim().length > 0) {
+      setSearchQuery('');
+      return true;
+    }
+    if (activeChat !== null) {
+      setActiveChat(null);
+      return true;
+    }
+    if (navTab !== 'chats') {
+      setNavTab('chats');
+      return true;
+    }
+    return false;
+  };
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      if (!window.history.state || !window.history.state.supachatApp) {
+        window.history.replaceState({ supachatApp: true, isRoot: true }, '', window.location.href);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      isPoppingHistoryRef.current = true;
+
+      const closed = closeTopmostLayer();
+
+      if (closed) {
+        setTimeout(() => {
+          isPoppingHistoryRef.current = false;
+        }, 50);
+      } else {
+        const now = Date.now();
+        if (now - lastExitTapRef.current < 2000) {
+          isPoppingHistoryRef.current = false;
+        } else {
+          lastExitTapRef.current = now;
+          window.history.pushState({ supachatApp: true, isRoot: true }, '', window.location.href);
+          triggerExitToast();
+          setTimeout(() => {
+            isPoppingHistoryRef.current = false;
+          }, 50);
+        }
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+    };
+  }, [
+    viewOnceActiveMsg,
+    showDisappearingModal,
+    showProfileModal,
+    showLinkedDevicesModal,
+    showCallHistory,
+    showKeyManager,
+    showNewGroupModal,
+    showNewDirectChatModal,
+    showWalkieTalkieConfirm,
+    showOverflowMenu,
+    e2eeExplainer,
+    popupNotification,
+    pendingLoginRequest,
+    newDeviceAlert,
+    searchQuery,
+    activeChat,
+    navTab
+  ]);
+
+  useEffect(() => {
+    if (isPoppingHistoryRef.current) {
+      prevActiveLayersCountRef.current = activeLayersCount;
+      return;
+    }
+
+    if (activeLayersCount > prevActiveLayersCountRef.current) {
+      window.history.pushState(
+        { supachatApp: true, depth: activeLayersCount, isSub: true },
+        '',
+        window.location.href
+      );
+    } else if (activeLayersCount < prevActiveLayersCountRef.current) {
+      if (window.history.state && window.history.state.isSub) {
+        window.history.back();
+      }
+    }
+    prevActiveLayersCountRef.current = activeLayersCount;
+  }, [activeLayersCount]);
+
   // Sweep stale typing states (6 seconds idle limit)
   useEffect(() => {
     const sweepInterval = setInterval(() => {
@@ -4297,6 +4486,13 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
         <div className="fixed bottom-6 right-6 z-50 bg-[#111b21] border border-emerald-500/30 text-emerald-300 px-4 py-2.5 rounded-xl shadow-2xl flex items-center gap-2 text-xs font-semibold animate-fade-in backdrop-blur-md">
           <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0" />
           <span>{e2eeToast}</span>
+        </div>
+      )}
+
+      {/* Press back again to exit Toast */}
+      {showExitToast && (
+        <div className="fixed bottom-16 left-1/2 -translate-x-1/2 z-[9999] bg-[#202c33] text-gray-200 text-xs font-medium px-4 py-2.5 rounded-full shadow-2xl border border-gray-700/60 flex items-center gap-2 animate-fade-in pointer-events-none select-none">
+          <span>Press back again to exit</span>
         </div>
       )}
     </div>
