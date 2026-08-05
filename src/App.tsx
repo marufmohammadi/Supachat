@@ -30,56 +30,72 @@ async function isDeviceAuthorized(userId: string): Promise<boolean> {
   }
 }
 
+function getInitialLocalSession(): any {
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && (key.includes('auth-token') || key.startsWith('sb-'))) {
+        const item = localStorage.getItem(key);
+        if (item) {
+          const parsed = JSON.parse(item);
+          const sess = parsed?.currentSession || parsed?.session || (parsed?.access_token ? parsed : null);
+          if (sess && sess.user) {
+            return sess;
+          }
+        }
+      }
+    }
+  } catch {}
+  return null;
+}
+
 export default function App() {
-  const [session, setSession] = useState<any>(null);
+  const initialLocalSession = getInitialLocalSession();
+  const [session, setSession] = useState<any>(initialLocalSession);
   const [isSandboxMode, setIsSandboxMode] = useState(false);
   const [isDbSetupOpen, setIsDbSetupOpen] = useState(false);
-  const [initializing, setInitializing] = useState(true);
+  const [initializing, setInitializing] = useState(!Boolean(initialLocalSession));
   const [isDbOffline, setIsDbOffline] = useState(false);
 
   useEffect(() => {
     let isMounted = true;
 
-    // Fail-safe deadlock timer: Splash screen NEVER blocks longer than 600ms
+    // Maximum 200ms safety timer for splash screen
     const deadlockTimer = setTimeout(() => {
       if (isMounted && initializing) {
-        console.warn('[PWA Boot] Deadlock safety timer fired (600ms). Dismissing splash screen.');
         setInitializing(false);
       }
-    }, 600);
+    }, 200);
 
-    // Ultra-fast active session restore from local auth storage
+    // Fast background active session verify
     const getSession = async () => {
       try {
         const { data }: any = await withTimeout(
           supabase.auth.getSession(),
-          400,
-          { data: { session: null }, error: null } as any
+          200,
+          { data: { session: initialLocalSession }, error: null } as any
         );
 
         if (!isMounted) return;
 
-        const activeSession = data?.session;
+        const activeSession = data?.session || initialLocalSession;
         if (activeSession) {
-          // Render main UI immediately!
           setSession(activeSession);
           setIsSandboxMode(false);
           
           // Verify device authorization asynchronously in the background
-          isDeviceAuthorized(activeSession.user.id).then((authorized) => {
-            if (!authorized && isMounted) {
-              console.warn('[PWA Boot] Device unauthorized on background check.');
-              setSession(null);
-            }
-          }).catch((err) => console.warn('[PWA Boot] Background device check notice:', err));
+          setTimeout(() => {
+            isDeviceAuthorized(activeSession.user.id).then((authorized) => {
+              if (!authorized && isMounted) {
+                console.warn('[PWA Boot] Device unauthorized on background check.');
+                setSession(null);
+              }
+            }).catch(() => {});
+          }, 500);
         }
         setIsDbOffline(false);
       } catch (err: any) {
-        console.warn('Silent session restore warning (Supabase may still be cold-starting):', err);
-        const errMsg = err?.message || '';
-        if (errMsg.toLowerCase().includes('failed to fetch')) {
-          setIsDbOffline(true);
-        }
+        console.warn('Silent session restore notice:', err);
       } finally {
         if (isMounted) {
           setInitializing(false);
@@ -95,12 +111,13 @@ export default function App() {
       if (!isMounted) return;
       if (newSession && !isSandboxMode) {
         setSession(newSession);
-        // Verify in background
-        isDeviceAuthorized(newSession.user.id).then((authorized) => {
-          if (!authorized && isMounted) {
-            setSession(null);
-          }
-        }).catch(() => {});
+        setTimeout(() => {
+          isDeviceAuthorized(newSession.user.id).then((authorized) => {
+            if (!authorized && isMounted) {
+              setSession(null);
+            }
+          }).catch(() => {});
+        }, 500);
       } else if (!newSession && !isSandboxMode) {
         setSession(null);
       }
@@ -141,8 +158,8 @@ export default function App() {
   if (initializing) {
     return (
       <div className="min-h-screen bg-[#0b141a] flex flex-col items-center justify-center text-gray-200 font-sans">
-        <div className="w-12 h-12 border-4 border-[#00a884] border-t-transparent rounded-full animate-spin mb-4" />
-        <p className="text-sm font-semibold tracking-wide text-gray-300">Initializing Secure Handshake...</p>
+        <div className="w-10 h-10 border-3 border-[#00a884] border-t-transparent rounded-full animate-spin mb-3" />
+        <span className="text-xs font-semibold tracking-wider text-[#00a884] uppercase">SupaChat</span>
       </div>
     );
   }

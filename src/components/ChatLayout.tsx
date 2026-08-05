@@ -339,18 +339,50 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
   const [incomingWalkieTalkieGroupName, setIncomingWalkieTalkieGroupName] = useState<string | null>(null);
   const [incomingWalkieTalkieCallerName, setIncomingWalkieTalkieCallerName] = useState<string | null>(null);
 
-  // State Management
-  const [profiles, setProfiles] = useState<Profile[]>([]);
-  const [myProfile, setMyProfile] = useState<Profile | null>(null);
+  // State Management with Instant Startup Local Caching
+  const [profiles, setProfiles] = useState<Profile[]>(() => {
+    if (!currentUserId) return [];
+    try {
+      const c = localStorage.getItem(`whatsapp_cached_profiles_${currentUserId}`);
+      return c ? JSON.parse(c) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [myProfile, setMyProfile] = useState<Profile | null>(() => {
+    if (!currentUserId) return null;
+    try {
+      const c = localStorage.getItem(`whatsapp_cached_my_profile_${currentUserId}`);
+      return c ? JSON.parse(c) : null;
+    } catch {
+      return null;
+    }
+  });
   const [showProfileModal, setShowProfileModal] = useState(false);
-  const [groups, setGroups] = useState<Group[]>([]);
+  const [groups, setGroups] = useState<Group[]>(() => {
+    if (!currentUserId) return [];
+    try {
+      const c = localStorage.getItem(`whatsapp_cached_groups_${currentUserId}`);
+      return c ? JSON.parse(c) : [];
+    } catch {
+      return [];
+    }
+  });
   const [lastMessages, setLastMessages] = useState<{
     [chatId: string]: {
       text: string;
       created_at: string;
       is_encrypted: boolean;
     }
-  }>({});
+  }>(() => {
+    if (!currentUserId) return {};
+    try {
+      const c = localStorage.getItem(`whatsapp_cached_last_messages_${currentUserId}`);
+      return c ? JSON.parse(c) : {};
+    } catch {
+      return {};
+    }
+  });
   const [activeChat, setActiveChat] = useState<{ type: 'direct' | 'group'; id: string } | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputMessage, setInputMessage] = useState('');
@@ -371,7 +403,10 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
   const [searchQuery, setSearchQuery] = useState('');
   const [newDirectUser, setNewDirectUser] = useState('');
   const [hasE2EEKeys, setHasE2EEKeys] = useState(false);
-  const [dbStatus, setDbStatus] = useState<'connected' | 'checking' | 'error'>('checking');
+  const [dbStatus, setDbStatus] = useState<'connected' | 'checking' | 'error'>(() => {
+    if (!currentUserId) return 'checking';
+    return localStorage.getItem(`whatsapp_cached_profiles_${currentUserId}`) ? 'connected' : 'checking';
+  });
   const [dbErrorString, setDbErrorString] = useState<string | null>(null);
   const [e2eeExplainer, setE2eeExplainer] = useState<Message | null>(null);
 
@@ -390,7 +425,15 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
   const isTypingBroadcastingRef = useRef<boolean>(false);
 
   // Unread message counters and instant desktop/in-app pop-up notification states
-  const [unreadCounts, setUnreadCounts] = useState<{ [chatId: string]: number }>({});
+  const [unreadCounts, setUnreadCounts] = useState<{ [chatId: string]: number }>(() => {
+    if (!currentUserId) return {};
+    try {
+      const c = localStorage.getItem(`whatsapp_cached_unread_counts_${currentUserId}`);
+      return c ? JSON.parse(c) : {};
+    } catch {
+      return {};
+    }
+  });
   const [popupNotification, setPopupNotification] = useState<{
     id: string;
     senderName: string;
@@ -696,29 +739,22 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
   }, [currentUserId, isSandboxMode]);
 
   const verifyDbWithRetries = async () => {
-    setDbStatus('checking');
-    const ok = await testSupabaseConnection();
-    if (ok) {
-      setDbStatus('connected');
-      fetchRealProfilesAndGroups();
-    } else {
-      setDbStatus('error');
-    }
+    fetchRealProfilesAndGroups();
   };
 
   const fetchRealProfilesAndGroups = async () => {
     try {
       setDbErrorString(null);
 
-      // 1 & 2. Fetch profiles and group memberships concurrently in parallel with 2.5s timeouts
+      // 1 & 2. Fetch profiles and group memberships concurrently in parallel with explicit select fields and 2.5s timeouts
       const [profilesRes, groupsRes] = await Promise.all([
         withTimeout(
-          supabase.from('profiles').select('*').order('username'),
+          supabase.from('profiles').select('id, username, display_name, avatar_url, public_key, email').order('username'),
           2500,
           { data: null, error: new Error('Profiles fetch timeout') } as any
         ),
         withTimeout(
-          supabase.from('group_members').select('groups (*)').eq('user_id', currentUserId),
+          supabase.from('group_members').select('groups (id, name, created_at, avatar_url, created_by, description)').eq('user_id', currentUserId),
           2500,
           { data: null, error: new Error('Groups fetch timeout') } as any
         )
@@ -734,18 +770,28 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
       }
 
       if (pData) {
+        setDbStatus('connected');
         const selfProfile = pData.find((u: Profile) => u.id === currentUserId);
-        if (selfProfile) {
-          setMyProfile(selfProfile);
-        } else if (currentUserId) {
-          setMyProfile({
-            id: currentUserId,
-            username: currentUsername,
-            display_name: session?.user?.user_metadata?.display_name || currentUsername,
-            avatar_url: currentUserAvatar,
-            email: currentUserEmail
-          });
+        const myProf = selfProfile || (currentUserId ? {
+          id: currentUserId,
+          username: currentUsername,
+          display_name: session?.user?.user_metadata?.display_name || currentUsername,
+          avatar_url: currentUserAvatar,
+          email: currentUserEmail
+        } : null);
+
+        if (myProf) {
+          setMyProfile(myProf);
+          try {
+            localStorage.setItem(`whatsapp_cached_my_profile_${currentUserId}`, JSON.stringify(myProf));
+          } catch {}
         }
+
+        const otherProfiles = pData.filter((u: Profile) => u.id !== currentUserId);
+        setProfiles(otherProfiles);
+        try {
+          localStorage.setItem(`whatsapp_cached_profiles_${currentUserId}`, JSON.stringify(otherProfiles));
+        } catch {}
 
         const hasMe = pData.some((u: Profile) => u.id === currentUserId);
         if (!hasMe && currentUserId) {
@@ -757,10 +803,6 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
             avatar_url: currentUserAvatar,
             public_key: localPublicKey
           })).catch(() => {});
-
-          setProfiles(pData.filter((u: Profile) => u.id !== currentUserId));
-        } else {
-          setProfiles(pData.filter((u: Profile) => u.id !== currentUserId));
         }
       }
 
@@ -768,6 +810,9 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
       if (gData) {
         joinedGroups = gData.map((item: any) => item.groups).filter(Boolean);
         setGroups(joinedGroups);
+        try {
+          localStorage.setItem(`whatsapp_cached_groups_${currentUserId}`, JSON.stringify(joinedGroups));
+        } catch {}
       }
 
       // 2.5 & 3. Fetch last messages and unread counts concurrently in parallel!
@@ -1038,6 +1083,9 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
           NewCounts: counts
         });
         setUnreadCounts(counts);
+        try {
+          localStorage.setItem(`whatsapp_cached_unread_counts_${currentUserId}`, JSON.stringify(counts));
+        } catch {}
       } else {
         console.log('[AUDIT] Discarding stale fetchUnreadCounts results to avoid blinking/flickering.');
       }
@@ -1221,6 +1269,9 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
         });
         
         setLastMessages(lastMsgsState);
+        try {
+          localStorage.setItem(`whatsapp_cached_last_messages_${currentUserId}`, JSON.stringify(lastMsgsState));
+        } catch {}
       }
     } catch (err) {
       console.error('Error in fetchLastMessages:', err);
