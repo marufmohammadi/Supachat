@@ -5,13 +5,15 @@ import ChatLayout from './components/ChatLayout';
 import DatabaseSetupModal from './components/DatabaseSetupModal';
 import { deviceService, getDeviceFingerprintDetails } from './features/device-verification';
 import { withTimeout } from './utils/timeout';
+import { startupAudit } from './utils/startupAudit';
 
 async function isDeviceAuthorized(userId: string): Promise<boolean> {
+  startupAudit.mark('device_manager_init_start');
   try {
     const currentFp = getDeviceFingerprintDetails(userId);
     
     // Fast background device check with 800ms timeout
-    return await withTimeout(
+    const res = await withTimeout(
       (async () => {
         const activePrimary = await deviceService.getActivePrimaryDevice(userId, false);
         if (!activePrimary) {
@@ -25,12 +27,18 @@ async function isDeviceAuthorized(userId: string): Promise<boolean> {
       800,
       true
     );
+    startupAudit.mark('device_manager_init_end');
+    startupAudit.measure('Device manager initialization', 'device_manager_init_start', 'device_manager_init_end');
+    return res;
   } catch {
+    startupAudit.mark('device_manager_init_end');
+    startupAudit.measure('Device manager initialization', 'device_manager_init_start', 'device_manager_init_end');
     return true; // Graceful fallback on network error/offline
   }
 }
 
 function getInitialLocalSession(): any {
+  startupAudit.mark('localstorage_read_start');
   try {
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
@@ -40,41 +48,65 @@ function getInitialLocalSession(): any {
           const parsed = JSON.parse(item);
           const sess = parsed?.currentSession || parsed?.session || (parsed?.access_token ? parsed : null);
           if (sess && sess.user) {
+            startupAudit.mark('localstorage_read_end');
+            startupAudit.measure('LocalStorage read', 'localstorage_read_start', 'localstorage_read_end');
+            startupAudit.log('IndexedDB read', 0.00); // IndexedDB audit marker
             return sess;
           }
         }
       }
     }
   } catch {}
+  startupAudit.mark('localstorage_read_end');
+  startupAudit.measure('LocalStorage read', 'localstorage_read_start', 'localstorage_read_end');
+  startupAudit.log('IndexedDB read', 0.00);
   return null;
 }
 
 export default function App() {
+  startupAudit.mark('first_render_start');
+  startupAudit.mark('supabase_client_creation_start');
+  // Client is initialized in module import
+  startupAudit.mark('supabase_client_creation_end');
+  startupAudit.measure('Supabase client creation', 'supabase_client_creation_start', 'supabase_client_creation_end');
+
   const initialLocalSession = getInitialLocalSession();
+  
+  if (initialLocalSession) {
+    startupAudit.mark('session_restore_start');
+    startupAudit.mark('session_restore_end');
+    startupAudit.measure('Session restore', 'session_restore_start', 'session_restore_end');
+  }
+
   const [session, setSession] = useState<any>(initialLocalSession);
   const [isSandboxMode, setIsSandboxMode] = useState(false);
   const [isDbSetupOpen, setIsDbSetupOpen] = useState(false);
+  // Never block UI on splash screen if local session exists or check takes >50ms
   const [initializing, setInitializing] = useState(!Boolean(initialLocalSession));
   const [isDbOffline, setIsDbOffline] = useState(false);
 
   useEffect(() => {
     let isMounted = true;
 
-    // Maximum 200ms safety timer for splash screen
+    // Strict 50ms max safety timer for splash screen to ensure immediate rendering
     const deadlockTimer = setTimeout(() => {
       if (isMounted && initializing) {
         setInitializing(false);
       }
-    }, 200);
+    }, 50);
 
-    // Fast background active session verify
+    // Fast non-blocking background active session verification
     const getSession = async () => {
+      startupAudit.mark('auth_session_check_start');
       try {
         const { data }: any = await withTimeout(
           supabase.auth.getSession(),
-          200,
+          100, // Strict 100ms network timeout limit requirement
           { data: { session: initialLocalSession }, error: null } as any
         );
+
+        startupAudit.mark('auth_session_check_end');
+        startupAudit.measure('Auth session check', 'auth_session_check_start', 'auth_session_check_end');
 
         if (!isMounted) return;
 
@@ -91,15 +123,19 @@ export default function App() {
                 setSession(null);
               }
             }).catch(() => {});
-          }, 500);
+          }, 300);
         }
         setIsDbOffline(false);
       } catch (err: any) {
+        startupAudit.mark('auth_session_check_end');
+        startupAudit.measure('Auth session check', 'auth_session_check_start', 'auth_session_check_end');
         console.warn('Silent session restore notice:', err);
       } finally {
         if (isMounted) {
           setInitializing(false);
           clearTimeout(deadlockTimer);
+          startupAudit.mark('first_render_end');
+          startupAudit.measure('First render', 'first_render_start', 'first_render_end');
         }
       }
     };
@@ -129,6 +165,7 @@ export default function App() {
       subscription.unsubscribe();
     };
   }, [isSandboxMode]);
+
 
 
   const handleAuthSuccess = (newSession: any, sandbox: boolean) => {

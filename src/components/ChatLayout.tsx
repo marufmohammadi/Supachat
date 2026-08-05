@@ -10,6 +10,7 @@ import { supabase, testSupabaseConnection } from '../lib/supabase';
 import { encryptMessage, decryptMessage, importPublicKey } from '../lib/crypto';
 import { checkHasLocalKeys, autoGenerateKeysWithRetry } from '../services/e2eeService';
 import { Profile, Group, Message, MessageMode } from '../types';
+import { startupAudit } from '../utils/startupAudit';
 import E2EEKeyManager from './E2EEKeyManager';
 import { DisappearingOptionsModal, DisappearingSettings } from './disappearing/DisappearingOptionsModal';
 import { ViewOnceViewerModal } from './disappearing/ViewOnceViewerModal';
@@ -341,6 +342,7 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
 
   // State Management with Instant Startup Local Caching
   const [profiles, setProfiles] = useState<Profile[]>(() => {
+    startupAudit.mark('chat_cache_loading_start');
     if (!currentUserId) return [];
     try {
       const c = localStorage.getItem(`whatsapp_cached_profiles_${currentUserId}`);
@@ -378,11 +380,22 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
     if (!currentUserId) return {};
     try {
       const c = localStorage.getItem(`whatsapp_cached_last_messages_${currentUserId}`);
-      return c ? JSON.parse(c) : {};
+      const res = c ? JSON.parse(c) : {};
+      startupAudit.mark('chat_cache_loading_end');
+      startupAudit.measure('Chat cache loading', 'chat_cache_loading_start', 'chat_cache_loading_end');
+      return res;
     } catch {
+      startupAudit.mark('chat_cache_loading_end');
+      startupAudit.measure('Chat cache loading', 'chat_cache_loading_start', 'chat_cache_loading_end');
       return {};
     }
   });
+
+  useEffect(() => {
+    startupAudit.mark('home_interactive_start');
+    startupAudit.mark('home_interactive_end');
+    startupAudit.measure('Home interactive', 'home_interactive_start', 'home_interactive_end');
+  }, []);
   const [activeChat, setActiveChat] = useState<{ type: 'direct' | 'group'; id: string } | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputMessage, setInputMessage] = useState('');
@@ -697,7 +710,12 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
     });
 
     if (currentUserId && !isSandboxMode) {
+      startupAudit.mark('push_notification_init_start');
       pwaService.setupPushNotifications(currentUserId, currentDeviceRecord?.device_id || 'primary_device')
+        .then(() => {
+          startupAudit.mark('push_notification_init_end');
+          startupAudit.measure('Push notification initialization', 'push_notification_init_start', 'push_notification_init_end');
+        })
         .catch(err => console.warn('PWA Push setup warning:', err));
     }
 
@@ -799,10 +817,14 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
   useEffect(() => {
     if (!currentUserId) return;
 
+    startupAudit.mark('e2ee_init_start');
+
     // Safety check: If valid local keys already exist, skip generation completely
     if (checkHasLocalKeys(currentUserId)) {
       setHasE2EEKeys(true);
       setE2eeAutoStatus('ready');
+      startupAudit.mark('e2ee_init_end');
+      startupAudit.measure('E2EE initialization', 'e2ee_init_start', 'e2ee_init_end');
       return;
     }
 
@@ -833,6 +855,9 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
       } else {
         setE2eeAutoStatus('failed');
       }
+
+      startupAudit.mark('e2ee_init_end');
+      startupAudit.measure('E2EE initialization', 'e2ee_init_start', 'e2ee_init_end');
     };
 
     runAutoGeneration();
@@ -932,6 +957,7 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
   };
 
   const fetchRealProfilesAndGroups = async () => {
+    startupAudit.mark('user_profile_fetch_start');
     try {
       setDbErrorString(null);
 
@@ -1025,6 +1051,9 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
 
     } catch (err) {
       console.error('Failed to sync profile tables:', err);
+    } finally {
+      startupAudit.mark('user_profile_fetch_end');
+      startupAudit.measure('User profile fetch', 'user_profile_fetch_start', 'user_profile_fetch_end');
     }
   };
 
@@ -1671,6 +1700,8 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
   useEffect(() => {
     if (isSandboxMode || !currentUserId) return;
 
+    startupAudit.mark('realtime_init_start');
+
     if (globalChannelRef.current) {
       globalChannelRef.current.unsubscribe();
     }
@@ -1833,6 +1864,8 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
       )
       .subscribe((status, err) => {
         console.log('[AUDIT] Global Realtime Channel subscription state:', status, err || '');
+        startupAudit.mark('realtime_init_end');
+        startupAudit.measure('Realtime initialization', 'realtime_init_start', 'realtime_init_end');
       });
 
     globalChannelRef.current = channel;

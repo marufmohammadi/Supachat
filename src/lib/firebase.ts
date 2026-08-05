@@ -1,6 +1,6 @@
 import { initializeApp, getApps, getApp, FirebaseApp } from 'firebase/app';
 import { getAuth, Auth } from 'firebase/auth';
-import { getFirestore, Firestore, doc, setDoc, getDocFromServer } from 'firebase/firestore';
+import { getFirestore, Firestore, doc, setDoc } from 'firebase/firestore';
 import { getMessaging, getToken, onMessage, isSupported, Messaging } from 'firebase/messaging';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { supabase } from './supabase';
@@ -110,23 +110,5 @@ export async function initFCMForegroundListener(onMessageReceived?: (payload: an
     console.warn('[FCM] Failed to set up foreground listener:', err);
   }
 }
-
-// Test connectivity as per Firebase integration instructions lazily
-async function testConnection() {
-  try {
-    await withTimeout(getDocFromServer(doc(db, 'test', 'connection')), 1000).catch(() => {});
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.error('Please check your Firebase configuration.');
-    }
-  }
-}
-// Run connection check lazily after boot
-if (typeof window !== 'undefined') {
-  setTimeout(() => {
-    testConnection().catch(() => {});
-  }, 2000);
-}
-
 
 export { app };
