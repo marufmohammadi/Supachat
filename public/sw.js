@@ -1,13 +1,13 @@
 // SupaChat Production Service Worker - High Performance Instant Load
-const CACHE_NAME = 'supachat-app-v3';
+const CACHE_NAME = 'supachat-app-v4';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
   '/manifest.json',
-  '/icon-192.png',
-  '/icon-512.png',
-  '/icon-maskable-192.png',
-  '/icon-maskable-512.png',
+  '/icon-192-v2.png',
+  '/icon-512-v2.png',
+  '/icon-maskable-192-v2.png',
+  '/icon-maskable-512-v2.png',
   '/favicon.ico'
 ];
 
@@ -132,8 +132,8 @@ self.addEventListener('push', (event) => {
 
   const options = {
     body: data.body || (isCall ? 'Incoming call...' : 'You have a new encrypted notification'),
-    icon: data.icon || '/icon-192.png',
-    badge: data.badge || '/icon-192.png',
+    icon: data.icon || '/icon-192-v2.png',
+    badge: data.badge || '/icon-192-v2.png',
     tag: isCall ? `call-${callId || Date.now()}` : (data.tag || (data.chatId ? `chat-${data.chatId}` : 'supachat-notification')),
     renotify: true,
     data: data.data || { url: data.url || '/', callId, chatId: data.chatId, type: data.type },

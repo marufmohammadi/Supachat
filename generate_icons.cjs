@@ -142,11 +142,19 @@ function main() {
   const icon32 = generateAppIconPng(32, 32, false);
   const faviconIco = createIcoFromPng(icon32, 32, 32);
 
-  fs.writeFileSync(path.join(publicDir, 'icon-192.png'), icon192);
-  fs.writeFileSync(path.join(publicDir, 'icon-512.png'), icon512);
-  fs.writeFileSync(path.join(publicDir, 'icon-maskable-192.png'), iconMaskable192);
-  fs.writeFileSync(path.join(publicDir, 'icon-maskable-512.png'), iconMaskable512);
+  fs.writeFileSync(path.join(publicDir, 'icon-192-v2.png'), icon192);
+  fs.writeFileSync(path.join(publicDir, 'icon-512-v2.png'), icon512);
+  fs.writeFileSync(path.join(publicDir, 'icon-maskable-192-v2.png'), iconMaskable192);
+  fs.writeFileSync(path.join(publicDir, 'icon-maskable-512-v2.png'), iconMaskable512);
   fs.writeFileSync(path.join(publicDir, 'favicon.ico'), faviconIco);
+
+  // Clean up old unversioned files if they exist
+  ['icon-192.png', 'icon-512.png', 'icon-maskable-192.png', 'icon-maskable-512.png'].forEach((oldFile) => {
+    const oldPath = path.join(publicDir, oldFile);
+    if (fs.existsSync(oldPath)) {
+      fs.unlinkSync(oldPath);
+    }
+  });
 
   console.log('✨ Generated pure binary PWA PNG & ICO icons successfully!');
 }
