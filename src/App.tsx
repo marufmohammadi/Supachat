@@ -83,11 +83,11 @@ export default function App() {
   const [isSandboxMode, setIsSandboxMode] = useState(false);
   const [isDbSetupOpen, setIsDbSetupOpen] = useState(false);
   const [showSplash, setShowSplash] = useState(true);
+  const [isSplashFading, setIsSplashFading] = useState(false);
   const [isDbOffline, setIsDbOffline] = useState(false);
 
   useEffect(() => {
     let isMounted = true;
-    const startTime = Date.now();
 
     // Fast non-blocking background active session verification
     const getSession = async () => {
@@ -129,15 +129,13 @@ export default function App() {
           startupAudit.mark('first_render_end');
           startupAudit.measure('First render', 'first_render_start', 'first_render_end');
 
-          const elapsed = Date.now() - startTime;
-          // Smooth 350ms-500ms display duration for the single splash screen
-          const remainingDelay = Math.max(0, Math.min(500 - elapsed, Math.max(0, 350 - elapsed)));
-
+          // Smooth WhatsApp-style instant transition overlay (0-50ms dismiss for cached session)
+          setIsSplashFading(true);
           setTimeout(() => {
             if (isMounted) {
               setShowSplash(false);
             }
-          }, remainingDelay);
+          }, 200);
         }
       }
     };
@@ -193,12 +191,8 @@ export default function App() {
     setIsSandboxMode(false);
   };
 
-  if (showSplash) {
-    return <SplashScreen />;
-  }
-
   return (
-    <div className="bg-[#0b141a] min-h-screen overflow-x-hidden">
+    <div className="bg-[#0b141a] min-h-screen overflow-x-hidden relative">
       {session ? (
         <ChatLayout 
           session={session} 
@@ -219,6 +213,9 @@ export default function App() {
         isOpen={isDbSetupOpen} 
         onClose={() => setIsDbSetupOpen(false)}
       />
+
+      {/* WhatsApp-Style Continuous Splash Transition Overlay */}
+      {showSplash && <SplashScreen fadeOut={isSplashFading} />}
     </div>
   );
 }

@@ -19,7 +19,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ fadeOut = false }) =
       <div className="h-4" />
 
       {/* Center Brand Identity */}
-      <div className="flex flex-col items-center justify-center text-center z-10 space-y-5 animate-splash-scale">
+      <div className="flex flex-col items-center justify-center text-center z-10 space-y-5">
         {/* Logo Icon with Soft Glowing Frame */}
         <div className="relative flex items-center justify-center">
           <div className="absolute inset-0 bg-[#00a884]/25 rounded-3xl blur-md scale-110 pointer-events-none" />
