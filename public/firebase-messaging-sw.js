@@ -28,8 +28,8 @@ messaging.onBackgroundMessage((payload) => {
 
   const notificationOptions = {
     body: notification.body || data.body || (isCall ? 'Incoming call...' : 'You have a new message'),
-    icon: notification.icon || data.icon || data.avatarUrl || '/icon-192.png',
-    badge: '/icon-192.png',
+    icon: notification.icon || data.icon || data.avatarUrl || '/icon-192-v2.png',
+    badge: '/icon-192-v2.png',
     tag: data.tag || (data.callId ? `call-${data.callId}` : 'fcm-notification'),
     data: data,
     requireInteraction: isCall,

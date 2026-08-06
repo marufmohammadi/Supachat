@@ -48,8 +48,8 @@ serve(async (req) => {
     const payload: WebPushPayload = {
       title: 'Call Ended',
       body: status === 'rejected' ? 'Call was declined' : 'Call ended',
-      icon: '/icon-192.png',
-      badge: '/icon-192.png',
+      icon: '/icon-192-v2.png',
+      badge: '/icon-192-v2.png',
       tag: `call-${callId}`, // Matches call tag so browser replaces ringing notification
       callId,
       type: 'call_ended',

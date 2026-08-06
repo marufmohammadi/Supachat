@@ -40,7 +40,7 @@ serve(async (req) => {
       .single();
 
     const callerName = callerProfile?.username || 'Someone';
-    const callerAvatar = callerProfile?.avatar_url || '/icon-192.png';
+    const callerAvatar = callerProfile?.avatar_url || '/icon-192-v2.png';
 
     // Fetch receiver push subscriptions
     const { data: subscriptions } = await supabase
@@ -65,7 +65,7 @@ serve(async (req) => {
       title: formattedCallType,
       body: `${callerName} is calling you...`,
       icon: callerAvatar,
-      badge: '/icon-192.png',
+      badge: '/icon-192-v2.png',
       tag: `call-${callId}`,
       callId,
       chatId: caller_id,

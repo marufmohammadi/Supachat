@@ -254,8 +254,8 @@ class PWAService {
       const reg = this.swRegistration || (await navigator.serviceWorker.ready);
       const notificationOptions: any = {
         body: options.body || '',
-        icon: options.icon || '/icon-192.png',
-        badge: '/icon-192.png',
+        icon: options.icon || '/icon-192-v2.png',
+        badge: '/icon-192-v2.png',
         tag: options.tag || options.chatId || 'supachat',
         renotify: true,
         data: {

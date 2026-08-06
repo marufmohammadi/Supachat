@@ -33,7 +33,7 @@ serve(async (req) => {
       .single();
 
     const senderName = senderProfile?.username || 'New Message';
-    const senderAvatar = senderProfile?.avatar_url || '/icon-192.png';
+    const senderAvatar = senderProfile?.avatar_url || '/icon-192-v2.png';
 
     let recipientUserIds: string[] = [];
 
@@ -79,7 +79,7 @@ serve(async (req) => {
       title: group_id ? `Group Message from ${senderName}` : senderName,
       body: messageSnippet,
       icon: senderAvatar,
-      badge: '/icon-192.png',
+      badge: '/icon-192-v2.png',
       tag: group_id ? `group-${group_id}` : `direct-${sender_id}`,
       chatId: group_id || sender_id,
       type: 'message',

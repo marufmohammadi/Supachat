@@ -101,7 +101,7 @@ export async function initFCMForegroundListener(onMessageReceived?: (payload: an
       if (document.visibilityState !== 'visible' && payload.notification?.title) {
         new Notification(payload.notification.title, {
           body: payload.notification.body,
-          icon: payload.notification.icon || '/icon-192.png',
+          icon: payload.notification.icon || '/icon-192-v2.png',
           data: payload.data,
         });
       }

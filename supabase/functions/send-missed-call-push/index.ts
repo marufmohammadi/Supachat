@@ -50,7 +50,7 @@ serve(async (req) => {
       .single();
 
     const callerName = callerProfile?.username || 'Unknown Contact';
-    const callerAvatar = callerProfile?.avatar_url || '/icon-192.png';
+    const callerAvatar = callerProfile?.avatar_url || '/icon-192-v2.png';
 
     // Fetch receiver push subscriptions
     const { data: subscriptions } = await supabase
@@ -68,7 +68,7 @@ serve(async (req) => {
       title: '📵 Missed Call',
       body: `You missed a ${callType} call from ${callerName}`,
       icon: callerAvatar,
-      badge: '/icon-192.png',
+      badge: '/icon-192-v2.png',
       tag: `missed-call-${record.id || Date.now()}`,
       chatId: callerId,
       type: 'missed_call',
