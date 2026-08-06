@@ -64,8 +64,8 @@ function generateAppIconPng(width, height, isMaskable = false) {
     for (let x = 0; x < width; x++) {
       const px = rowOffset + 1 + x * 4;
 
-      // Dark Navy Background (#0F172A)
-      let r = 15, g = 23, b = 42, a = 255;
+      // Dark SupaChat Background (#08131A)
+      let r = 8, g = 19, b = 26, a = 255;
 
       const dx = x - cx;
       const dy = y - cy;
