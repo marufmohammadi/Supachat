@@ -3,6 +3,7 @@ import { supabase } from './lib/supabase';
 import AuthLayout from './components/AuthLayout';
 import ChatLayout from './components/ChatLayout';
 import DatabaseSetupModal from './components/DatabaseSetupModal';
+import SplashScreen from './components/SplashScreen';
 import { deviceService, getDeviceFingerprintDetails } from './features/device-verification';
 import { withTimeout } from './utils/timeout';
 import { startupAudit } from './utils/startupAudit';
@@ -193,12 +194,7 @@ export default function App() {
   };
 
   if (initializing) {
-    return (
-      <div className="min-h-screen bg-[#0b141a] flex flex-col items-center justify-center text-gray-200 font-sans">
-        <div className="w-10 h-10 border-3 border-[#00a884] border-t-transparent rounded-full animate-spin mb-3" />
-        <span className="text-xs font-semibold tracking-wider text-[#00a884] uppercase">SupaChat</span>
-      </div>
-    );
+    return <SplashScreen />;
   }
 
   return (
