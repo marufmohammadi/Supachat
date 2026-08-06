@@ -56,13 +56,28 @@ self.addEventListener('fetch', (event) => {
     return; // Pass through directly to network
   }
 
+  // Special handling for manifest.json: Network-first to ensure Android WebAPK updates immediately
+  if (url.pathname === '/manifest.json') {
+    event.respondWith(
+      fetch(req)
+        .then((networkResponse) => {
+          if (networkResponse && networkResponse.status === 200) {
+            const copy = networkResponse.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(req, copy));
+          }
+          return networkResponse;
+        })
+        .catch(() => caches.match(req))
+    );
+    return;
+  }
+
   const isAppShell =
     req.mode === 'navigate' ||
     url.pathname === '/' ||
     url.pathname.endsWith('.html') ||
     url.pathname.startsWith('/assets/') ||
     url.pathname.includes('icon-') ||
-    url.pathname === '/manifest.json' ||
     url.pathname === '/favicon.ico';
 
   if (isAppShell) {
