@@ -82,19 +82,12 @@ export default function App() {
   const [session, setSession] = useState<any>(initialLocalSession);
   const [isSandboxMode, setIsSandboxMode] = useState(false);
   const [isDbSetupOpen, setIsDbSetupOpen] = useState(false);
-  // Never block UI on splash screen if local session exists or check takes >50ms
-  const [initializing, setInitializing] = useState(!Boolean(initialLocalSession));
+  const [showSplash, setShowSplash] = useState(true);
   const [isDbOffline, setIsDbOffline] = useState(false);
 
   useEffect(() => {
     let isMounted = true;
-
-    // Strict 50ms max safety timer for splash screen to ensure immediate rendering
-    const deadlockTimer = setTimeout(() => {
-      if (isMounted && initializing) {
-        setInitializing(false);
-      }
-    }, 50);
+    const startTime = Date.now();
 
     // Fast non-blocking background active session verification
     const getSession = async () => {
@@ -133,10 +126,18 @@ export default function App() {
         console.warn('Silent session restore notice:', err);
       } finally {
         if (isMounted) {
-          setInitializing(false);
-          clearTimeout(deadlockTimer);
           startupAudit.mark('first_render_end');
           startupAudit.measure('First render', 'first_render_start', 'first_render_end');
+
+          const elapsed = Date.now() - startTime;
+          // Smooth 350ms-500ms display duration for the single splash screen
+          const remainingDelay = Math.max(0, Math.min(500 - elapsed, Math.max(0, 350 - elapsed)));
+
+          setTimeout(() => {
+            if (isMounted) {
+              setShowSplash(false);
+            }
+          }, remainingDelay);
         }
       }
     };
@@ -162,7 +163,6 @@ export default function App() {
 
     return () => {
       isMounted = false;
-      clearTimeout(deadlockTimer);
       subscription.unsubscribe();
     };
   }, [isSandboxMode]);
@@ -193,7 +193,7 @@ export default function App() {
     setIsSandboxMode(false);
   };
 
-  if (initializing) {
+  if (showSplash) {
     return <SplashScreen />;
   }
 
