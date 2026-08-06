@@ -1,5 +1,5 @@
 // SupaChat Production Service Worker - High Performance Instant Load
-const CACHE_NAME = 'supachat-app-v2';
+const CACHE_NAME = 'supachat-app-v3';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
