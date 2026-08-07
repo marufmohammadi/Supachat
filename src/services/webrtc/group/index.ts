@@ -126,43 +126,30 @@ export class GroupWebRTCManager {
     // 2. Handle remote tracks (consolidating into persistent peer remoteStream)
     pc.ontrack = (event) => {
       const streams = event.streams || [];
-      const nativeStreamId = streams[0]?.id || 'N/A';
+      const nativeStream = streams[0];
+      const nativeStreamId = nativeStream?.id || 'N/A';
       console.log(`[GROUP-WEBRTC] [ontrack] Ontrack event fired for peer ${peerId}. Remote track: id=${event.track.id}, kind=${event.track.kind}, enabled=${event.track.enabled}, readyState=${event.track.readyState}. Native remote stream ID: ${nativeStreamId}`);
       
       event.track.enabled = true;
 
-      // Consolidate track into info.remoteStream
-      const exists = info.remoteStream.getTracks().some(t => t.id === event.track.id);
-      if (!exists) {
-        info.remoteStream.addTrack(event.track);
-        console.log(`[GROUP-WEBRTC] [ontrack] Consolidated remote track [id=${event.track.id}, kind=${event.track.kind}] into persistent remoteStream for peer ${peerId}`);
-      } else {
-        console.log(`[GROUP-WEBRTC] [ontrack] Track [id=${event.track.id}] already present in persistent remoteStream for peer ${peerId}`);
-      }
-
-      // Consolidate additional tracks from the native event stream
-      if (streams[0]) {
-        streams[0].getTracks().forEach((track) => {
+      if (nativeStream) {
+        nativeStream.getTracks().forEach((track) => {
           track.enabled = true;
-          const hasTrack = info.remoteStream.getTracks().some(t => t.id === track.id);
-          if (!hasTrack) {
-            info.remoteStream.addTrack(track);
-            console.log(`[GROUP-WEBRTC] [ontrack] Consolidated additional track [id=${track.id}, kind=${track.kind}] from native stream for peer ${peerId}`);
-          }
         });
+        info.remoteStream = nativeStream;
+      } else {
+        const exists = info.remoteStream.getTracks().some(t => t.id === event.track.id);
+        if (!exists) {
+          info.remoteStream.addTrack(event.track);
+          console.log(`[GROUP-WEBRTC] [ontrack] Consolidated remote track [id=${event.track.id}, kind=${event.track.kind}] into persistent remoteStream for peer ${peerId}`);
+        }
       }
 
-      // Log consolidated streams detail as requested
+      // Log consolidated streams detail
       const consolidatedTracks = info.remoteStream.getTracks();
       const audioTracks = info.remoteStream.getAudioTracks();
       const videoTracks = info.remoteStream.getVideoTracks();
       console.log(`[GROUP-WEBRTC] [ontrack] Consolidated remoteStream for peer ${peerId}: id=${info.remoteStream.id}, totalTracks=${consolidatedTracks.length}, audioTracksCount=${audioTracks.length}, videoTracksCount=${videoTracks.length}`);
-      consolidatedTracks.forEach((t, i) => {
-        console.log(`  -> Track ${i}: id=${t.id}, kind=${t.kind}, enabled=${t.enabled}, readyState=${t.readyState}`);
-      });
-
-      // Assign a fresh MediaStream reference with accumulated tracks to safely trigger React state re-render
-      info.remoteStream = new MediaStream(info.remoteStream.getTracks());
 
       // Trigger a state update by passing a fresh Map copy to the hook
       this.triggerRemoteStreamsUpdate();

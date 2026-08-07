@@ -14,8 +14,13 @@ function createMockMediaStream(video: boolean): MediaStream {
     const AudioContextClass = (window as any).AudioContext || (window as any).webkitAudioContext;
     if (AudioContextClass) {
       const ctx = new AudioContextClass();
+      if (ctx.state === 'suspended') {
+        ctx.resume().catch(() => {});
+      }
       const dest = ctx.createMediaStreamDestination();
       const osc = ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(440, ctx.currentTime);
       osc.connect(dest);
       osc.start();
       const audioTrack = dest.stream.getAudioTracks()[0];
@@ -541,11 +546,17 @@ export function useCall({ currentUserId, currentUserProfile, onCallEvent }: UseC
       } 
       else if (signal.type === 'candidate') {
         if (pcRef.current && pcRef.current.remoteDescription) {
-          await pcRef.current.addIceCandidate(new RTCIceCandidate(signal.data));
-          console.log('[CALLS] ICE Candidate added successfully');
+          if (signal.data && (signal.data.candidate !== undefined || signal.data.sdpMid !== undefined)) {
+            await pcRef.current.addIceCandidate(new RTCIceCandidate(signal.data)).catch((err) => {
+              console.warn('[CALLS] Non-fatal candidate error:', err);
+            });
+            console.log('[CALLS] ICE Candidate added successfully');
+          }
         } else {
           console.log('[CALLS] Queueing ICE candidate because remote description is not yet applied');
-          iceCandidatesQueueRef.current.push(signal.data);
+          if (signal.data) {
+            iceCandidatesQueueRef.current.push(signal.data);
+          }
         }
       } 
       else if (signal.type === 'hangup') {

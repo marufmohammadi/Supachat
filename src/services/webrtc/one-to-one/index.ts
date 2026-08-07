@@ -59,46 +59,37 @@ export class OneToOneWebRTCManager {
     // Handle incoming remote media tracks (consolidating into persistent stream reference)
     pc.ontrack = (event) => {
       const streams = event.streams || [];
-      const nativeStreamId = streams[0]?.id || 'N/A';
+      const nativeStream = streams[0];
+      const nativeStreamId = nativeStream?.id || 'N/A';
       console.log(`[1TO1-WEBRTC] [ontrack] Ontrack event fired! Received remote track: id=${event.track.id}, kind=${event.track.kind}, enabled=${event.track.enabled}, readyState=${event.track.readyState}. Native remote stream ID: ${nativeStreamId}`);
       
       event.track.enabled = true;
       
-      // Robust consolidation: accumulate all remote tracks into this.remoteStream
-      const exists = this.remoteStream.getTracks().some(t => t.id === event.track.id);
-      if (!exists) {
-        this.remoteStream.addTrack(event.track);
-        console.log(`[1TO1-WEBRTC] [ontrack] Consolidated remote track [id=${event.track.id}, kind=${event.track.kind}] into persistent remoteStream`);
-      } else {
-        console.log(`[1TO1-WEBRTC] [ontrack] Track [id=${event.track.id}] already present in persistent remoteStream`);
-      }
-
-      // Also ensure any additional tracks present in the native event streams are accumulated
-      if (streams[0]) {
-        streams[0].getTracks().forEach((track) => {
+      let streamToPropagate: MediaStream;
+      if (nativeStream) {
+        nativeStream.getTracks().forEach((track) => {
           track.enabled = true;
-          const hasTrack = this.remoteStream.getTracks().some(t => t.id === track.id);
-          if (!hasTrack) {
-            this.remoteStream.addTrack(track);
-            console.log(`[1TO1-WEBRTC] [ontrack] Consolidated additional track [id=${track.id}, kind=${track.kind}] from native stream into persistent remoteStream`);
-          }
         });
+        streamToPropagate = nativeStream;
+      } else {
+        const exists = this.remoteStream.getTracks().some(t => t.id === event.track.id);
+        if (!exists) {
+          this.remoteStream.addTrack(event.track);
+          console.log(`[1TO1-WEBRTC] [ontrack] Consolidated remote track [id=${event.track.id}, kind=${event.track.kind}] into persistent remoteStream`);
+        }
+        streamToPropagate = this.remoteStream;
       }
 
-      // Output remote stream details as requested
-      const consolidatedTracks = this.remoteStream.getTracks();
-      const audioTracks = this.remoteStream.getAudioTracks();
-      const videoTracks = this.remoteStream.getVideoTracks();
+      const consolidatedTracks = streamToPropagate.getTracks();
+      const audioTracks = streamToPropagate.getAudioTracks();
+      const videoTracks = streamToPropagate.getVideoTracks();
       
-      console.log(`[1TO1-WEBRTC] [ontrack] Current persistent remoteStream detail: id=${this.remoteStream.id}, totalTracks=${consolidatedTracks.length}, audioTracksCount=${audioTracks.length}, videoTracksCount=${videoTracks.length}`);
+      console.log(`[1TO1-WEBRTC] [ontrack] Propagating remoteStream detail: id=${streamToPropagate.id}, totalTracks=${consolidatedTracks.length}, audioTracksCount=${audioTracks.length}, videoTracksCount=${videoTracks.length}`);
       consolidatedTracks.forEach((t, i) => {
         console.log(`  -> Track ${i}: id=${t.id}, kind=${t.kind}, enabled=${t.enabled}, readyState=${t.readyState}`);
       });
 
-      // Construct and return a fresh MediaStream containing all accumulated tracks to safely trigger React state re-render
-      const freshStream = new MediaStream(this.remoteStream.getTracks());
-      console.log(`[1TO1-WEBRTC] [ontrack] Propagating fresh remote MediaStream reference to handler: id=${freshStream.id}, trackCount=${freshStream.getTracks().length}`);
-      this.onRemoteStream(freshStream);
+      this.onRemoteStream(streamToPropagate);
     };
 
     // Handle ICE Candidate generation

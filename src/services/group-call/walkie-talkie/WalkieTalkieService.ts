@@ -438,11 +438,22 @@ export class GroupWalkieTalkieManager {
     pc.ontrack = (event) => {
       console.log(`[WALKIE-TALKIE] Received remote track from peer=${peerId}, kind=${event.track.kind}, enabled=${event.track.enabled}, readyState=${event.track.readyState}`);
       event.track.enabled = true;
-      remoteStream.addTrack(event.track);
+      
+      const streams = event.streams || [];
+      const nativeStream = streams[0];
+      if (nativeStream) {
+        nativeStream.getTracks().forEach((track) => {
+          track.enabled = true;
+        });
+        this.remoteStreams.set(peerId, nativeStream);
+      } else {
+        const exists = remoteStream.getTracks().some(t => t.id === event.track.id);
+        if (!exists) {
+          remoteStream.addTrack(event.track);
+        }
+        this.remoteStreams.set(peerId, remoteStream);
+      }
 
-      // Store a fresh MediaStream object reference to safely trigger React state re-render and srcObject binding
-      const freshStream = new MediaStream(remoteStream.getTracks());
-      this.remoteStreams.set(peerId, freshStream);
       this.callbacks.onRemoteStreamsChanged(new Map(this.remoteStreams));
     };
 

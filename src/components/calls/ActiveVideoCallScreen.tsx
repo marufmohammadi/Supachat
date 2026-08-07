@@ -46,7 +46,9 @@ export const ActiveVideoCallScreen: React.FC<ActiveVideoCallScreenProps> = ({
   useEffect(() => {
     if (localVideoRef.current && localStream) {
       console.log('[CALLS] Binding local video stream. Local stream ID:', localStream.id, 'tracks:', localStream.getTracks().length);
-      localVideoRef.current.srcObject = localStream;
+      if (localVideoRef.current.srcObject !== localStream) {
+        localVideoRef.current.srcObject = localStream;
+      }
       localVideoRef.current.muted = true; // MUST mute local preview to prevent microphone echo
       localVideoRef.current.play().catch((err) => {
         console.warn('[CALLS] Local video autoplay failed or was blocked:', err);
@@ -70,7 +72,9 @@ export const ActiveVideoCallScreen: React.FC<ActiveVideoCallScreenProps> = ({
         console.log(`  -> Remote Video Track: id=${t.id}, kind=${t.kind}, enabled=${t.enabled}, readyState=${t.readyState}`);
       });
 
-      remoteVideoRef.current.srcObject = remoteStream;
+      if (remoteVideoRef.current.srcObject !== remoteStream) {
+        remoteVideoRef.current.srcObject = remoteStream;
+      }
       remoteVideoRef.current.muted = false; // Ensure remote stream audio is NEVER muted on remote element
       
       const playPromise = remoteVideoRef.current.play();

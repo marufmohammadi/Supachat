@@ -47,7 +47,9 @@ export const ActiveVoiceCallScreen: React.FC<ActiveVoiceCallScreenProps> = ({
         console.log(`  -> Remote Audio Track: id=${t.id}, kind=${t.kind}, enabled=${t.enabled}, readyState=${t.readyState}`);
       });
 
-      audioRef.current.srcObject = remoteStream;
+      if (audioRef.current.srcObject !== remoteStream) {
+        audioRef.current.srcObject = remoteStream;
+      }
       audioRef.current.muted = false; // Ensure remote audio is NEVER muted
       
       const playPromise = audioRef.current.play();
