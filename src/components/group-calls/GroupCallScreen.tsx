@@ -51,15 +51,40 @@ const ParticipantVideoTile: React.FC<{
 
   useEffect(() => {
     if (videoRef.current && stream) {
-      videoRef.current.srcObject = stream;
-      videoRef.current.play().catch((err) => {
-        console.warn('[GROUP-CALL] Video tile playback failed or was blocked:', err);
+      const audioTracks = stream.getAudioTracks();
+      const videoTracks = stream.getVideoTracks();
+      console.log(`[GROUP-CALL] Binding stream to ParticipantVideoTile (isLocal=${isLocal}). Stream ID: ${stream.id}, audioTracks: ${audioTracks.length}, videoTracks: ${videoTracks.length}`);
+      
+      audioTracks.forEach((t) => {
+        t.enabled = true;
       });
+      videoTracks.forEach((t) => {
+        t.enabled = true;
+      });
+
+      videoRef.current.srcObject = stream;
+      videoRef.current.muted = isLocal; // Remote stream audio MUST NOT be muted, local preview MUST be muted
+      
+      const playPromise = videoRef.current.play();
+      if (playPromise !== undefined) {
+        playPromise.catch((err) => {
+          console.warn('[GROUP-CALL] Video tile playback failed or was blocked:', err);
+        });
+      }
     }
-  }, [stream]);
+  }, [stream, isLocal]);
+
+  const handleInteraction = () => {
+    if (videoRef.current && videoRef.current.paused && stream) {
+      console.log('[GROUP-CALL] User interaction triggered tile play retry');
+      videoRef.current.play().catch(() => {});
+    }
+  };
 
   return (
     <div
+      onClick={handleInteraction}
+      onTouchStart={handleInteraction}
       className={`relative w-full h-full bg-[#1c242c] rounded-2xl overflow-hidden border transition-all duration-300 shadow-lg ${
         isActiveSpeaker
           ? 'border-emerald-500 shadow-lg shadow-emerald-500/20'

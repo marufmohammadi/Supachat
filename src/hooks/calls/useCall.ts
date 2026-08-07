@@ -597,16 +597,34 @@ export function useCall({ currentUserId, currentUserProfile, onCallEvent }: UseC
         video: callType === 'video' ? { facingMode: 'user' } : false
       };
       
-      mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
-      localStreamRef.current = mediaStream;
-      setLocalStream(mediaStream);
-      console.log('[CALLS] getUserMedia successful in startCall:', {
-        localStream: mediaStream,
-        audioTracksCount: mediaStream.getAudioTracks().length,
-        videoTracksCount: mediaStream.getVideoTracks().length
-      });
+      try {
+        mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+      } catch (firstErr) {
+        if (callType === 'video') {
+          console.log('[CALLS] Camera with facingMode constraint failed. Retrying with basic video constraint...');
+          mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+        } else {
+          throw firstErr;
+        }
+      }
+
+      if (mediaStream) {
+        // Ensure all local tracks are enabled
+        mediaStream.getTracks().forEach((track) => {
+          track.enabled = true;
+          console.log(`[CALLS] Local track ready: id=${track.id}, kind=${track.kind}, enabled=${track.enabled}, readyState=${track.readyState}`);
+        });
+
+        localStreamRef.current = mediaStream;
+        setLocalStream(mediaStream);
+        console.log('[CALLS] getUserMedia successful in startCall:', {
+          localStreamId: mediaStream.id,
+          audioTracksCount: mediaStream.getAudioTracks().length,
+          videoTracksCount: mediaStream.getVideoTracks().length
+        });
+      }
     } catch (err) {
-      console.warn('[CALLS] Media device access denied. Falling back to simulated media stream:', err);
+      console.warn('[CALLS] Real media device access failed or denied. Falling back to simulated media stream:', err);
       // Fallback to simulated media stream
       mediaStream = createMockMediaStream(callType === 'video');
       localStreamRef.current = mediaStream;
@@ -759,16 +777,34 @@ export function useCall({ currentUserId, currentUserProfile, onCallEvent }: UseC
         video: targetCall.call_type === 'video' ? { facingMode: 'user' } : false
       };
       
-      mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
-      localStreamRef.current = mediaStream;
-      setLocalStream(mediaStream);
-      console.log('[CALLS] getUserMedia successful in acceptCall:', {
-        localStream: mediaStream,
-        audioTracksCount: mediaStream.getAudioTracks().length,
-        videoTracksCount: mediaStream.getVideoTracks().length
-      });
+      try {
+        mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+      } catch (firstErr) {
+        if (targetCall.call_type === 'video') {
+          console.log('[CALLS] Camera with facingMode constraint failed in acceptCall. Retrying with basic video constraint...');
+          mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+        } else {
+          throw firstErr;
+        }
+      }
+
+      if (mediaStream) {
+        // Ensure all local tracks are enabled
+        mediaStream.getTracks().forEach((track) => {
+          track.enabled = true;
+          console.log(`[CALLS] Local track ready in acceptCall: id=${track.id}, kind=${track.kind}, enabled=${track.enabled}, readyState=${track.readyState}`);
+        });
+
+        localStreamRef.current = mediaStream;
+        setLocalStream(mediaStream);
+        console.log('[CALLS] getUserMedia successful in acceptCall:', {
+          localStreamId: mediaStream.id,
+          audioTracksCount: mediaStream.getAudioTracks().length,
+          videoTracksCount: mediaStream.getVideoTracks().length
+        });
+      }
     } catch (err) {
-      console.warn('[CALLS] Media device access denied during accept. Falling back to simulated media stream:', err);
+      console.warn('[CALLS] Real media device access failed or denied in acceptCall. Falling back to simulated media stream:', err);
       // Fallback to simulated media stream
       mediaStream = createMockMediaStream(targetCall.call_type === 'video');
       localStreamRef.current = mediaStream;

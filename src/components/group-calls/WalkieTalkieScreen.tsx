@@ -85,10 +85,22 @@ const WalkieTalkieAudioPlayer: React.FC<{ stream: MediaStream }> = ({ stream }) 
 
   useEffect(() => {
     if (audioRef.current && stream) {
-      audioRef.current.srcObject = stream;
-      audioRef.current.play().catch((err) => {
-        console.warn('[WALKIE-TALKIE] Remote stream playback blocked or failed:', err);
+      const audioTracks = stream.getAudioTracks();
+      console.log(`[WALKIE-TALKIE] Binding remote audio stream. ID: ${stream.id}, tracksCount: ${stream.getTracks().length}, audioTracksCount: ${audioTracks.length}`);
+      audioTracks.forEach((t) => {
+        t.enabled = true;
+        console.log(`  -> Walkie Talkie Audio Track: id=${t.id}, kind=${t.kind}, enabled=${t.enabled}, readyState=${t.readyState}`);
       });
+
+      audioRef.current.srcObject = stream;
+      audioRef.current.muted = false; // Ensure walkie-talkie audio is NEVER muted
+      
+      const playPromise = audioRef.current.play();
+      if (playPromise !== undefined) {
+        playPromise.catch((err) => {
+          console.warn('[WALKIE-TALKIE] Remote stream playback blocked or failed:', err);
+        });
+      }
     }
   }, [stream]);
 
@@ -180,8 +192,24 @@ export const WalkieTalkieScreen: React.FC<WalkieTalkieScreenProps> = ({
   // Active online participants count (excluding self)
   const onlineCount = participants.length;
 
+  // Interaction gesture handler to resume audio if browser autoplay blocked audio elements
+  const handleOverlayInteraction = () => {
+    const audioElems = document.querySelectorAll('#walkie-talkie-overlay audio');
+    audioElems.forEach((elem) => {
+      const audio = elem as HTMLAudioElement;
+      if (audio.paused) {
+        audio.play().catch(() => {});
+      }
+    });
+  };
+
   return (
-    <div id="walkie-talkie-overlay" className="fixed inset-0 z-50 bg-[#0b141a]/95 backdrop-blur-md text-white flex flex-col items-center justify-between select-none">
+    <div 
+      id="walkie-talkie-overlay" 
+      onClick={handleOverlayInteraction}
+      onTouchStart={handleOverlayInteraction}
+      className="fixed inset-0 z-50 bg-[#0b141a]/95 backdrop-blur-md text-white flex flex-col items-center justify-between select-none"
+    >
       
       {/* Play remote audio streams in the background */}
       {Array.from(remoteStreams.entries()).map(([peerId, stream]) => (

@@ -40,20 +40,43 @@ export const ActiveVoiceCallScreen: React.FC<ActiveVoiceCallScreenProps> = ({
   // Bind the remote WebRTC audio stream to playing element
   useEffect(() => {
     if (audioRef.current && remoteStream) {
-      console.log('[CALLS] Binding remote stream to audio element');
-      audioRef.current.srcObject = remoteStream;
-      
-      // Attempt play (handling browser autoplay policies safely)
-      audioRef.current.play().catch((err) => {
-        console.warn('[CALLS] Autoplay audio permission delayed:', err);
+      const audioTracks = remoteStream.getAudioTracks();
+      console.log(`[CALLS] Binding remote voice stream to audio element. Remote stream ID: ${remoteStream.id}, totalTracks: ${remoteStream.getTracks().length}, audioTracks: ${audioTracks.length}`);
+      audioTracks.forEach((t) => {
+        t.enabled = true;
+        console.log(`  -> Remote Audio Track: id=${t.id}, kind=${t.kind}, enabled=${t.enabled}, readyState=${t.readyState}`);
       });
+
+      audioRef.current.srcObject = remoteStream;
+      audioRef.current.muted = false; // Ensure remote audio is NEVER muted
+      
+      const playPromise = audioRef.current.play();
+      if (playPromise !== undefined) {
+        playPromise.catch((err) => {
+          console.warn('[CALLS] Autoplay audio permission delayed or blocked:', err);
+        });
+      }
     }
   }, [remoteStream]);
 
+  // User gesture handler to resume audio if browser autoplay blocked initial play
+  const handleInteraction = () => {
+    if (audioRef.current && audioRef.current.paused && remoteStream) {
+      console.log('[CALLS] User gesture triggered audio play retry');
+      audioRef.current.play().catch((err) => {
+        console.warn('[CALLS] Audio retry play failed:', err);
+      });
+    }
+  };
+
   return (
-    <div className="fixed inset-0 z-50 flex flex-col items-center justify-between bg-[#0b141a] text-white p-6 md:p-12">
+    <div 
+      onClick={handleInteraction}
+      onTouchStart={handleInteraction}
+      className="fixed inset-0 z-50 flex flex-col items-center justify-between bg-[#0b141a] text-white p-6 md:p-12"
+    >
       {/* Hidden play element for remote sound stream */}
-      <audio ref={audioRef} autoPlay />
+      <audio ref={audioRef} autoPlay playsInline />
 
       {/* Header Info */}
       <div className="w-full flex justify-between items-center text-[#8696a0]">

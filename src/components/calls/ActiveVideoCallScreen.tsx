@@ -45,27 +45,59 @@ export const ActiveVideoCallScreen: React.FC<ActiveVideoCallScreenProps> = ({
   // Bind local video stream
   useEffect(() => {
     if (localVideoRef.current && localStream) {
-      console.log('[CALLS] Binding local video stream');
+      console.log('[CALLS] Binding local video stream. Local stream ID:', localStream.id, 'tracks:', localStream.getTracks().length);
       localVideoRef.current.srcObject = localStream;
+      localVideoRef.current.muted = true; // MUST mute local preview to prevent microphone echo
       localVideoRef.current.play().catch((err) => {
         console.warn('[CALLS] Local video autoplay failed or was blocked:', err);
       });
     }
   }, [localStream, isCameraEnabled]);
 
-  // Bind remote video stream
+  // Bind remote video/audio stream
   useEffect(() => {
     if (remoteVideoRef.current && remoteStream) {
-      console.log('[CALLS] Binding remote video stream');
-      remoteVideoRef.current.srcObject = remoteStream;
-      remoteVideoRef.current.play().catch((err) => {
-        console.warn('[CALLS] Remote video autoplay failed or was blocked:', err);
+      const audioTracks = remoteStream.getAudioTracks();
+      const videoTracks = remoteStream.getVideoTracks();
+      console.log(`[CALLS] Binding remote video stream to video element. Stream ID: ${remoteStream.id}, totalTracks: ${remoteStream.getTracks().length}, audioTracks: ${audioTracks.length}, videoTracks: ${videoTracks.length}`);
+      
+      audioTracks.forEach((t) => {
+        t.enabled = true;
+        console.log(`  -> Remote Audio Track: id=${t.id}, kind=${t.kind}, enabled=${t.enabled}, readyState=${t.readyState}`);
       });
+      videoTracks.forEach((t) => {
+        t.enabled = true;
+        console.log(`  -> Remote Video Track: id=${t.id}, kind=${t.kind}, enabled=${t.enabled}, readyState=${t.readyState}`);
+      });
+
+      remoteVideoRef.current.srcObject = remoteStream;
+      remoteVideoRef.current.muted = false; // Ensure remote stream audio is NEVER muted on remote element
+      
+      const playPromise = remoteVideoRef.current.play();
+      if (playPromise !== undefined) {
+        playPromise.catch((err) => {
+          console.warn('[CALLS] Remote video autoplay failed or was blocked:', err);
+        });
+      }
     }
   }, [remoteStream]);
 
+  // User gesture handler to resume video/audio if browser autoplay blocked initial play
+  const handleInteraction = () => {
+    if (remoteVideoRef.current && remoteVideoRef.current.paused && remoteStream) {
+      console.log('[CALLS] User gesture triggered remote video play retry');
+      remoteVideoRef.current.play().catch((err) => {
+        console.warn('[CALLS] Video retry play failed:', err);
+      });
+    }
+  };
+
   return (
-    <div className="fixed inset-0 z-50 bg-black text-white flex flex-col justify-between overflow-hidden">
+    <div 
+      onClick={handleInteraction}
+      onTouchStart={handleInteraction}
+      className="fixed inset-0 z-50 bg-black text-white flex flex-col justify-between overflow-hidden"
+    >
       
       {/* 1. Fullscreen Remote Video */}
       <div className="absolute inset-0 bg-zinc-950 flex items-center justify-center">
