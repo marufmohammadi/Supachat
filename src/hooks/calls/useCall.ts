@@ -573,6 +573,7 @@ export function useCall({ currentUserId, currentUserProfile, onCallEvent }: UseC
     }
 
     console.log(`[CALLS] Starting outgoing ${callType} call to user:`, receiverProfile.username);
+    isCallEndingRef.current = false;
     setCallError(null);
     setOtherPartyProfile(receiverProfile);
     setCallRole('caller');
@@ -745,6 +746,7 @@ export function useCall({ currentUserId, currentUserProfile, onCallEvent }: UseC
     if (!targetCall) return;
 
     console.log('[CALLS] Accepting incoming call:', targetCall.id);
+    isCallEndingRef.current = false;
     setActiveCall(targetCall);
     setCallRole('receiver');
     setCallError(null);
@@ -923,6 +925,7 @@ export function useCall({ currentUserId, currentUserProfile, onCallEvent }: UseC
     }
 
     console.log('[CALLS] Receiving incoming call event:', incomingCall);
+    isCallEndingRef.current = false;
     setActiveCall(incomingCall);
     setCallRole('receiver');
     setCallDuration(0);

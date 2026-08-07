@@ -250,8 +250,11 @@ export function useGroupCall({ currentUserId, onGroupCallEvent }: UseGroupCallPr
 
       // Simple, deterministic mesh role rule:
       // The person who joined LATER (larger timestamp) is the caller and initiates the SDP offer.
-      // This prevents glare (dual simultaneous offers) and is perfectly reliable.
-      const shouldCreateOffer = myJoinTime > theirJoinTime;
+      // If timestamps are equal, break tie lexicographically by user ID.
+      // This prevents glare (dual simultaneous offers) and ensures exactly one offer is generated.
+      const shouldCreateOffer = myJoinTime !== theirJoinTime
+        ? myJoinTime > theirJoinTime
+        : currentUserId.localeCompare(peerId) < 0;
 
       await webRTCManagerRef.current.connectToPeer(peerId, shouldCreateOffer);
     }
