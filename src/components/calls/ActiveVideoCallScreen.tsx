@@ -76,6 +76,7 @@ export const ActiveVideoCallScreen: React.FC<ActiveVideoCallScreenProps> = ({
         remoteVideoRef.current.srcObject = remoteStream;
       }
       remoteVideoRef.current.muted = false; // Ensure remote stream audio is NEVER muted on remote element
+      remoteVideoRef.current.volume = 1.0;
       
       const playPromise = remoteVideoRef.current.play();
       if (playPromise !== undefined) {

@@ -65,31 +65,33 @@ export class OneToOneWebRTCManager {
       
       event.track.enabled = true;
       
-      let streamToPropagate: MediaStream;
       if (nativeStream) {
         nativeStream.getTracks().forEach((track) => {
           track.enabled = true;
+          const exists = this.remoteStream.getTracks().some(t => t.id === track.id);
+          if (!exists) {
+            this.remoteStream.addTrack(track);
+          }
         });
-        streamToPropagate = nativeStream;
       } else {
         const exists = this.remoteStream.getTracks().some(t => t.id === event.track.id);
         if (!exists) {
           this.remoteStream.addTrack(event.track);
           console.log(`[1TO1-WEBRTC] [ontrack] Consolidated remote track [id=${event.track.id}, kind=${event.track.kind}] into persistent remoteStream`);
         }
-        streamToPropagate = this.remoteStream;
       }
 
-      const consolidatedTracks = streamToPropagate.getTracks();
-      const audioTracks = streamToPropagate.getAudioTracks();
-      const videoTracks = streamToPropagate.getVideoTracks();
+      const consolidatedTracks = this.remoteStream.getTracks();
+      const audioTracks = this.remoteStream.getAudioTracks();
+      const videoTracks = this.remoteStream.getVideoTracks();
       
-      console.log(`[1TO1-WEBRTC] [ontrack] Propagating remoteStream detail: id=${streamToPropagate.id}, totalTracks=${consolidatedTracks.length}, audioTracksCount=${audioTracks.length}, videoTracksCount=${videoTracks.length}`);
+      console.log(`[1TO1-WEBRTC] [ontrack] Propagating remoteStream detail: totalTracks=${consolidatedTracks.length}, audioTracksCount=${audioTracks.length}, videoTracksCount=${videoTracks.length}`);
       consolidatedTracks.forEach((t, i) => {
         console.log(`  -> Track ${i}: id=${t.id}, kind=${t.kind}, enabled=${t.enabled}, readyState=${t.readyState}`);
       });
 
-      this.onRemoteStream(streamToPropagate);
+      // Pass a fresh MediaStream instance wrapping all current tracks so React state update reference comparison (Object.is) fires
+      this.onRemoteStream(new MediaStream(this.remoteStream.getTracks()));
     };
 
     // Handle ICE Candidate generation

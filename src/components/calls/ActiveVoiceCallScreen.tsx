@@ -51,6 +51,7 @@ export const ActiveVoiceCallScreen: React.FC<ActiveVoiceCallScreenProps> = ({
         audioRef.current.srcObject = remoteStream;
       }
       audioRef.current.muted = false; // Ensure remote audio is NEVER muted
+      audioRef.current.volume = 1.0;
       
       const playPromise = audioRef.current.play();
       if (playPromise !== undefined) {

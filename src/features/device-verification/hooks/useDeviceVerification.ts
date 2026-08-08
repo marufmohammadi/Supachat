@@ -181,6 +181,13 @@ export function useDeviceVerification({ currentUserId, isSandboxMode, onForceLog
     const isPrimary = currentDevice.is_primary || (devices.length > 0 && devices[0]?.id === currentDevice.id);
     if (!isPrimary) return;
 
+    // Query initial pending login requests on mount/listener init
+    deviceService.getPendingLoginRequests(currentUserId, isSandboxMode).then(reqs => {
+      if (reqs && reqs.length > 0) {
+        setPendingLoginRequest(reqs[0]);
+      }
+    });
+
     // Sandbox listener
     const handleSandboxRequestCreated = (e: CustomEvent) => {
       const req = e.detail as DeviceLoginRequest;
@@ -199,7 +206,7 @@ export function useDeviceVerification({ currentUserId, isSandboxMode, onForceLog
         .on(
           'postgres_changes',
           {
-            event: 'INSERT',
+            event: '*',
             schema: 'public',
             table: 'device_login_requests',
             filter: `user_id=eq.${currentUserId}`
@@ -208,6 +215,8 @@ export function useDeviceVerification({ currentUserId, isSandboxMode, onForceLog
             const req = payload.new as DeviceLoginRequest;
             if (req && req.status === 'pending') {
               setPendingLoginRequest(req);
+            } else if (req && req.status !== 'pending') {
+              setPendingLoginRequest(prev => prev?.id === req.id ? null : prev);
             }
           }
         )

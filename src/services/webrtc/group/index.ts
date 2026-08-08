@@ -400,7 +400,7 @@ export class GroupWebRTCManager {
     this.peerConnections.forEach((info, peerId) => {
       // Include streams that have any active tracks (audio or video)
       if (info.remoteStream.getTracks().length > 0) {
-        streamsMap.set(peerId, info.remoteStream);
+        streamsMap.set(peerId, new MediaStream(info.remoteStream.getTracks()));
       }
     });
     this.onRemoteStreamsChanged(streamsMap);

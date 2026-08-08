@@ -49,15 +49,7 @@ export const deviceService = {
 
     if (isSandboxMode) {
       const devices = getSandboxDevices(userId).filter(d => !d.is_revoked && d.is_primary);
-      const primary = devices[0];
-      if (!primary) return null;
-      if (primary.last_active) {
-        const lastActiveTime = new Date(primary.last_active).getTime();
-        if (Date.now() - lastActiveTime > HEARTBEAT_TIMEOUT_MS) {
-          return null; // Session inactive or expired
-        }
-      }
-      return primary;
+      return devices[0] || null;
     }
 
     try {
@@ -67,21 +59,12 @@ export const deviceService = {
         .eq('user_id', userId)
         .eq('is_primary', true)
         .eq('is_revoked', false)
-        .order('last_active', { ascending: false })
+        .order('created_at', { ascending: true })
         .limit(1)
         .maybeSingle();
 
       if (error || !data) {
         return null;
-      }
-
-      // Check if device heartbeat is still alive (within 2 minutes)
-      if (data.last_active) {
-        const lastActiveTime = new Date(data.last_active).getTime();
-        if (Date.now() - lastActiveTime > HEARTBEAT_TIMEOUT_MS) {
-          console.log('[DEVICE-VERIFICATION] Primary device session is stale/inactive (heartbeat > 2m).');
-          return null;
-        }
       }
 
       return data as UserDevice;
@@ -561,6 +544,26 @@ export const deviceService = {
         id: 'req-local-' + Math.random().toString(36).substring(2, 9),
         ...(reqData as DeviceLoginRequest)
       };
+    }
+  },
+
+  async getPendingLoginRequests(userId: string, isSandboxMode: boolean): Promise<DeviceLoginRequest[]> {
+    if (!userId) return [];
+    if (isSandboxMode) {
+      return getSandboxRequests(userId).filter(r => r.status === 'pending');
+    }
+    try {
+      const { data, error } = await supabase
+        .from('device_login_requests')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('status', 'pending')
+        .order('created_at', { ascending: false });
+
+      if (error || !data) return [];
+      return data as DeviceLoginRequest[];
+    } catch {
+      return [];
     }
   },
 

@@ -1022,13 +1022,44 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
       }
 
       let joinedGroups: Group[] = [];
-      if (gData) {
-        joinedGroups = gData.map((item: any) => item.groups).filter(Boolean);
-        setGroups(joinedGroups);
-        try {
-          localStorage.setItem(`whatsapp_cached_groups_${currentUserId}`, JSON.stringify(joinedGroups));
-        } catch {}
+      if (gData && Array.isArray(gData)) {
+        joinedGroups = gData.map((item: any) => {
+          if (!item.groups) return null;
+          if (Array.isArray(item.groups)) return item.groups[0];
+          return item.groups;
+        }).filter(Boolean);
       }
+
+      // Fallback: If join query returned empty, attempt direct two-step query
+      if (joinedGroups.length === 0 && currentUserId) {
+        try {
+          const { data: memberRows } = await supabase
+            .from('group_members')
+            .select('group_id')
+            .eq('user_id', currentUserId);
+
+          if (memberRows && memberRows.length > 0) {
+            const gIds = memberRows.map((m: any) => m.group_id).filter(Boolean);
+            if (gIds.length > 0) {
+              const { data: groupList } = await supabase
+                .from('groups')
+                .select('id, name, created_at, avatar_url, created_by')
+                .in('id', gIds);
+
+              if (groupList && groupList.length > 0) {
+                joinedGroups = groupList as Group[];
+              }
+            }
+          }
+        } catch (fallbackErr) {
+          console.warn('Fallback group fetch notice:', fallbackErr);
+        }
+      }
+
+      setGroups(joinedGroups);
+      try {
+        localStorage.setItem(`whatsapp_cached_groups_${currentUserId}`, JSON.stringify(joinedGroups));
+      } catch {}
 
       // 2.5 & 3. Fetch last messages and unread counts concurrently in parallel!
       await Promise.all([
@@ -2629,6 +2660,16 @@ export default function ChatLayout({ session, isSandboxMode, onLogout, onOpenDbS
           .insert(memberPayloads);
 
         if (mError) throw mError;
+
+        const newGroupObj: Group = {
+          id: gData.id,
+          name: gData.name,
+          avatar_url: gData.avatar_url,
+          created_by: gData.created_by,
+          created_at: gData.created_at,
+          members_count: selectedMembers.length + 1
+        };
+        setGroups(prev => [...prev.filter(g => g.id !== gData.id), newGroupObj]);
 
         setShowNewGroupModal(false);
         setGroupName('');
