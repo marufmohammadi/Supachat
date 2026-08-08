@@ -292,18 +292,24 @@ export const deviceService = {
       }
 
       if (existing) {
+        const updateFields: any = {
+          device_id: payload.device_id,
+          last_active: nowIso,
+          login_time: nowIso,
+          login_count: (existing.login_count || 1) + 1,
+          public_key_fingerprint: payload.public_key_fingerprint,
+          is_revoked: false,
+          updated_at: nowIso
+        };
+
+        if (!hasPrimary && !forceLinkedDevice) {
+          updateFields.is_primary = true;
+        }
+
         // Update
         const { data: updated, error: updateError } = await supabase
           .from('user_devices')
-          .update({
-            device_id: payload.device_id,
-            last_active: nowIso,
-            login_time: nowIso,
-            login_count: (existing.login_count || 1) + 1,
-            public_key_fingerprint: payload.public_key_fingerprint,
-            is_revoked: false,
-            updated_at: nowIso
-          })
+          .update(updateFields)
           .eq('id', existing.id)
           .select()
           .single();
@@ -526,11 +532,23 @@ export const deviceService = {
     }
 
     try {
-      const { data, error } = await supabase
+      let { data, error } = await supabase
         .from('device_login_requests')
         .insert(reqData)
         .select()
         .single();
+
+      if (error) {
+        console.warn('[DEVICE-VERIFICATION] Initial insert error, retrying without primary_device_id:', error.message);
+        const { primary_device_id, ...cleanReqData } = reqData;
+        const retry = await supabase
+          .from('device_login_requests')
+          .insert(cleanReqData)
+          .select()
+          .single();
+        data = retry.data;
+        error = retry.error;
+      }
 
       if (error || !data) {
         console.warn('[DEVICE-VERIFICATION] Fallback creating login request locally:', error?.message);

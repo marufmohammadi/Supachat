@@ -652,11 +652,14 @@ CREATE TABLE IF NOT EXISTS public.device_login_requests (
   requester_browser TEXT,
   requester_os TEXT,
   requester_fingerprint TEXT NOT NULL,
+  primary_device_id TEXT,
   qr_session_token TEXT,
   status TEXT DEFAULT 'pending' NOT NULL, -- 'pending', 'approved', 'declined', 'expired'
   created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
   expires_at TIMESTAMP WITH TIME ZONE NOT NULL
 );
+
+ALTER TABLE public.device_login_requests ADD COLUMN IF NOT EXISTS primary_device_id TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_device_login_requests_user ON public.device_login_requests(user_id);
 CREATE INDEX IF NOT EXISTS idx_device_login_requests_status ON public.device_login_requests(status);
