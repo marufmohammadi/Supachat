@@ -66,6 +66,39 @@ export default function AuthLayout({ onAuthSuccess, onOpenDbSetup, isDbOffline =
   const [pendingSession, setPendingSession] = useState<any | null>(null);
   const [approvalCountdown, setApprovalCountdown] = useState(60);
 
+  // Restore active pending request on mount if page was refreshed
+  useEffect(() => {
+    let isMounted = true;
+    const checkPendingOnMount = async () => {
+      try {
+        const fp = getDeviceFingerprintDetails('temp');
+        if (!fp?.device_id) return;
+        const activeReq = await deviceService.getPendingLoginRequestForRequester('', fp.device_id, false);
+        if (activeReq && activeReq.status === 'pending' && isMounted) {
+          const now = Date.now();
+          const exp = new Date(activeReq.expires_at).getTime();
+          const remainingSec = Math.max(1, Math.floor((exp - now) / 1000));
+          if (remainingSec > 0) {
+            setPendingRequestId(activeReq.id);
+            setWaitingForApproval(true);
+            setApprovalCountdown(remainingSec);
+            const { data } = await supabase.auth.getSession();
+            if (data?.session) {
+              setPendingSession(data.session);
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('Pending check on mount notice:', err);
+      }
+    };
+
+    checkPendingOnMount();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
   // Countdown timer for approval waiting
   useEffect(() => {
     if (!waitingForApproval || approvalCountdown <= 0) return;
@@ -98,8 +131,13 @@ export default function AuthLayout({ onAuthSuccess, onOpenDbSetup, isDbOffline =
         if (req.status === 'approved') {
           setWaitingForApproval(false);
           setPendingRequestId(null);
-          if (pendingSession) onAuthSuccess(pendingSession, true);
-        } else if (req.status === 'declined') {
+          let sess = pendingSession;
+          if (!sess) {
+            const { data } = await supabase.auth.getSession();
+            sess = data?.session;
+          }
+          if (sess) onAuthSuccess(sess, true);
+        } else if (req.status === 'declined' || req.status === 'expired') {
           setWaitingForApproval(false);
           setPendingRequestId(null);
           setPendingSession(null);
@@ -130,8 +168,13 @@ export default function AuthLayout({ onAuthSuccess, onOpenDbSetup, isDbOffline =
             if (req.status === 'approved') {
               setWaitingForApproval(false);
               setPendingRequestId(null);
-              if (pendingSession) onAuthSuccess(pendingSession, false);
-            } else if (req.status === 'declined') {
+              let sess = pendingSession;
+              if (!sess) {
+                const { data } = await supabase.auth.getSession();
+                sess = data?.session;
+              }
+              if (sess) onAuthSuccess(sess, false);
+            } else if (req.status === 'declined' || req.status === 'expired') {
               setWaitingForApproval(false);
               setPendingRequestId(null);
               setPendingSession(null);

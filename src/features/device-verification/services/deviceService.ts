@@ -497,6 +497,7 @@ export const deviceService = {
   ): Promise<DeviceLoginRequest> {
     const now = new Date();
     const expires = new Date(now.getTime() + 60 * 1000).toISOString(); // 60s timeout
+    const activePrimary = await this.getActivePrimaryDevice(userId, isSandboxMode);
 
     const reqData: Partial<DeviceLoginRequest> = {
       user_id: userId,
@@ -505,6 +506,7 @@ export const deviceService = {
       requester_browser: payload.browser,
       requester_os: payload.operating_system,
       requester_fingerprint: payload.device_fingerprint,
+      primary_device_id: activePrimary?.device_id || undefined,
       qr_session_token: qrToken || null,
       status: 'pending',
       created_at: now.toISOString(),
@@ -567,21 +569,76 @@ export const deviceService = {
     }
   },
 
+  async getPendingLoginRequestForRequester(
+    userId: string,
+    requesterDeviceId: string,
+    isSandboxMode: boolean
+  ): Promise<DeviceLoginRequest | null> {
+    if (!requesterDeviceId) return null;
+
+    if (isSandboxMode) {
+      const reqs = getSandboxRequests(userId).filter(
+        r => r.status === 'pending' && r.requester_device_id === requesterDeviceId
+      );
+      return reqs[0] || null;
+    }
+
+    try {
+      let query = supabase
+        .from('device_login_requests')
+        .select('*')
+        .eq('requester_device_id', requesterDeviceId)
+        .eq('status', 'pending');
+
+      if (userId) {
+        query = query.eq('user_id', userId);
+      }
+
+      const { data, error } = await query
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (error || !data) return null;
+      return data as DeviceLoginRequest;
+    } catch {
+      return null;
+    }
+  },
+
   async updateLoginRequestStatus(
     requestId: string,
     status: 'approved' | 'declined' | 'expired',
     isSandboxMode: boolean,
-    userId?: string
+    userId?: string,
+    performingDeviceId?: string
   ): Promise<boolean> {
     if (isSandboxMode && userId) {
       const reqs = getSandboxRequests(userId);
       const idx = reqs.findIndex(r => r.id === requestId);
       if (idx >= 0) {
+        const req = reqs[idx];
+
+        // Security check 1: Requester device cannot approve/decline its own request
+        if (performingDeviceId && req.requester_device_id === performingDeviceId) {
+          console.warn('[DEVICE-VERIFICATION] Security violation: Requester device cannot approve/decline its own request.');
+          return false;
+        }
+
+        // Security check 2: Performing device must be active primary device
+        if (performingDeviceId) {
+          const devs = getSandboxDevices(userId);
+          const performingDev = devs.find(d => d.device_id === performingDeviceId || d.id === performingDeviceId);
+          if (!performingDev || !performingDev.is_primary || performingDev.is_revoked) {
+            console.warn('[DEVICE-VERIFICATION] Security violation: Non-primary device cannot respond to login requests.');
+            return false;
+          }
+        }
+
         reqs[idx].status = status;
         saveSandboxRequests(userId, reqs);
 
         if (status === 'approved') {
-          const req = reqs[idx];
           const payload: RegisterDevicePayload = {
             device_id: req.requester_device_id,
             device_fingerprint: req.requester_fingerprint,
@@ -605,6 +662,39 @@ export const deviceService = {
     }
 
     try {
+      // Fetch request first to verify user_id and requester_device_id
+      const { data: req, error: fetchErr } = await supabase
+        .from('device_login_requests')
+        .select('*')
+        .eq('id', requestId)
+        .single();
+
+      if (fetchErr || !req) {
+        console.warn('[DEVICE-VERIFICATION] Request not found for ID:', requestId);
+        return false;
+      }
+
+      // Security Check 1: Requester device cannot approve/decline its own request
+      if (performingDeviceId && req.requester_device_id === performingDeviceId) {
+        console.warn('[DEVICE-VERIFICATION] Security violation: Requester device cannot approve/decline its own request.');
+        return false;
+      }
+
+      // Security Check 2: Performing device MUST be active Primary Device for this user
+      if (performingDeviceId && req.user_id) {
+        const { data: performingDev } = await supabase
+          .from('user_devices')
+          .select('is_primary, is_revoked')
+          .eq('user_id', req.user_id)
+          .eq('device_id', performingDeviceId)
+          .maybeSingle();
+
+        if (!performingDev || !performingDev.is_primary || performingDev.is_revoked) {
+          console.warn('[DEVICE-VERIFICATION] Security violation: Only active Primary Device is authorized to approve/decline requests.');
+          return false;
+        }
+      }
+
       const { data: updatedReq, error } = await supabase
         .from('device_login_requests')
         .update({ status })

@@ -52,6 +52,7 @@ export interface DeviceLoginRequest {
   requester_browser: string;
   requester_os: string;
   requester_fingerprint: string;
+  primary_device_id?: string;
   qr_session_token?: string;
   status: 'pending' | 'approved' | 'declined' | 'expired';
   created_at: string;

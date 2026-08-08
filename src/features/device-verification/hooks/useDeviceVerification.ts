@@ -177,21 +177,37 @@ export function useDeviceVerification({ currentUserId, isSandboxMode, onForceLog
   useEffect(() => {
     if (!currentUserId || !currentDevice) return;
 
-    // Only listen if this is the Primary Device
-    const isPrimary = currentDevice.is_primary || (devices.length > 0 && devices[0]?.id === currentDevice.id);
-    if (!isPrimary) return;
+    // Only listen if this is strictly the Primary Device
+    const isPrimary = Boolean(currentDevice.is_primary);
+    if (!isPrimary) {
+      setPendingLoginRequest(null);
+      return;
+    }
 
     // Query initial pending login requests on mount/listener init
     deviceService.getPendingLoginRequests(currentUserId, isSandboxMode).then(reqs => {
       if (reqs && reqs.length > 0) {
-        setPendingLoginRequest(reqs[0]);
+        // Filter out requests created by this device itself
+        const validReqs = reqs.filter(r => r.requester_device_id !== currentDevice.device_id);
+        if (validReqs.length > 0) {
+          setPendingLoginRequest(validReqs[0]);
+        } else {
+          setPendingLoginRequest(null);
+        }
+      } else {
+        setPendingLoginRequest(null);
       }
     });
 
     // Sandbox listener
     const handleSandboxRequestCreated = (e: CustomEvent) => {
       const req = e.detail as DeviceLoginRequest;
-      if (req && req.user_id === currentUserId && req.status === 'pending') {
+      if (
+        req &&
+        req.user_id === currentUserId &&
+        req.status === 'pending' &&
+        req.requester_device_id !== currentDevice.device_id
+      ) {
         setPendingLoginRequest(req);
       }
     };
@@ -213,10 +229,10 @@ export function useDeviceVerification({ currentUserId, isSandboxMode, onForceLog
           },
           payload => {
             const req = payload.new as DeviceLoginRequest;
-            if (req && req.status === 'pending') {
+            if (req && req.status === 'pending' && req.requester_device_id !== currentDevice.device_id) {
               setPendingLoginRequest(req);
             } else if (req && req.status !== 'pending') {
-              setPendingLoginRequest(prev => prev?.id === req.id ? null : prev);
+              setPendingLoginRequest(prev => (prev?.id === req.id ? null : prev));
             }
           }
         )
@@ -227,24 +243,36 @@ export function useDeviceVerification({ currentUserId, isSandboxMode, onForceLog
       window.removeEventListener('sandbox_login_request_created', handleSandboxRequestCreated as EventListener);
       if (channel) supabase.removeChannel(channel);
     };
-  }, [currentUserId, currentDevice, devices, isSandboxMode]);
+  }, [currentUserId, currentDevice, isSandboxMode]);
 
   const approveRequest = useCallback(async (requestId: string) => {
-    const success = await deviceService.updateLoginRequestStatus(requestId, 'approved', isSandboxMode, currentUserId);
+    const success = await deviceService.updateLoginRequestStatus(
+      requestId,
+      'approved',
+      isSandboxMode,
+      currentUserId,
+      currentDevice?.device_id
+    );
     if (success) {
       setPendingLoginRequest(null);
       refreshDevices();
     }
     return success;
-  }, [currentUserId, isSandboxMode, refreshDevices]);
+  }, [currentUserId, currentDevice, isSandboxMode, refreshDevices]);
 
   const declineRequest = useCallback(async (requestId: string) => {
-    const success = await deviceService.updateLoginRequestStatus(requestId, 'declined', isSandboxMode, currentUserId);
+    const success = await deviceService.updateLoginRequestStatus(
+      requestId,
+      'declined',
+      isSandboxMode,
+      currentUserId,
+      currentDevice?.device_id
+    );
     if (success) {
       setPendingLoginRequest(null);
     }
     return success;
-  }, [currentUserId, isSandboxMode]);
+  }, [currentUserId, currentDevice, isSandboxMode]);
 
   const logoutDevice = useCallback(async (deviceTableId: string) => {
     if (!currentUserId) return false;
@@ -262,16 +290,14 @@ export function useDeviceVerification({ currentUserId, isSandboxMode, onForceLog
   const openModal = useCallback(() => setIsModalOpen(true), []);
   const closeModal = useCallback(() => setIsModalOpen(false), []);
 
-  const isPrimaryDevice = Boolean(
-    currentDevice?.is_primary || (devices.length > 0 && devices[0]?.id === currentDevice?.id)
-  );
+  const isPrimaryDevice = Boolean(currentDevice?.is_primary);
 
   return {
     devices,
     currentDevice,
     isPrimaryDevice,
     newDeviceAlert,
-    pendingLoginRequest,
+    pendingLoginRequest: isPrimaryDevice ? pendingLoginRequest : null,
     loading,
     isModalOpen,
     openModal,
