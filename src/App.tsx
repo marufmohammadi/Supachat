@@ -8,33 +8,34 @@ import { deviceService, getDeviceFingerprintDetails } from './features/device-ve
 import { withTimeout } from './utils/timeout';
 import { startupAudit } from './utils/startupAudit';
 
-async function isDeviceAuthorized(userId: string): Promise<boolean> {
+async function isDeviceAuthorized(userId: string, isSandboxMode: boolean = false): Promise<boolean> {
   startupAudit.mark('device_manager_init_start');
   try {
     const currentFp = getDeviceFingerprintDetails(userId);
+    const activePrimary = await deviceService.getActivePrimaryDevice(userId, isSandboxMode);
     
-    // Fast background device check with 800ms timeout
-    const res = await withTimeout(
-      (async () => {
-        const activePrimary = await deviceService.getActivePrimaryDevice(userId, false);
-        if (!activePrimary) {
-          return true;
-        }
-        if (activePrimary.device_id === currentFp.device_id && !activePrimary.is_revoked) {
-          return true;
-        }
-        return await deviceService.isDeviceApproved(userId, currentFp.device_id, false);
-      })(),
-      800,
-      true
-    );
+    if (!activePrimary) {
+      const linked = await deviceService.getLinkedDevices(userId, isSandboxMode);
+      if (linked.length === 0) {
+        startupAudit.mark('device_manager_init_end');
+        return true;
+      }
+      startupAudit.mark('device_manager_init_end');
+      return false;
+    }
+
+    if (activePrimary.device_id === currentFp.device_id && !activePrimary.is_revoked) {
+      startupAudit.mark('device_manager_init_end');
+      return true;
+    }
+
+    const isApproved = await deviceService.isDeviceApproved(userId, currentFp.device_id, isSandboxMode);
     startupAudit.mark('device_manager_init_end');
-    startupAudit.measure('Device manager initialization', 'device_manager_init_start', 'device_manager_init_end');
-    return res;
-  } catch {
+    return isApproved;
+  } catch (err) {
     startupAudit.mark('device_manager_init_end');
-    startupAudit.measure('Device manager initialization', 'device_manager_init_start', 'device_manager_init_end');
-    return true; // Graceful fallback on network error/offline
+    console.warn('[App] Device authorization check warning:', err);
+    return false;
   }
 }
 
@@ -79,7 +80,7 @@ export default function App() {
     startupAudit.measure('Session restore', 'session_restore_start', 'session_restore_end');
   }
 
-  const [session, setSession] = useState<any>(initialLocalSession);
+  const [session, setSession] = useState<any>(null);
   const [isSandboxMode, setIsSandboxMode] = useState(false);
   const [isDbSetupOpen, setIsDbSetupOpen] = useState(false);
   const [showSplash, setShowSplash] = useState(true);
@@ -89,7 +90,7 @@ export default function App() {
   useEffect(() => {
     let isMounted = true;
 
-    // Fast non-blocking background active session verification
+    // Fast active session and device authorization verification
     const getSession = async () => {
       startupAudit.mark('auth_session_check_start');
       try {
@@ -106,18 +107,16 @@ export default function App() {
 
         const activeSession = data?.session || initialLocalSession;
         if (activeSession) {
-          setSession(activeSession);
-          setIsSandboxMode(false);
-          
-          // Verify device authorization asynchronously in the background
-          setTimeout(() => {
-            isDeviceAuthorized(activeSession.user.id).then((authorized) => {
-              if (!authorized && isMounted) {
-                console.warn('[PWA Boot] Device unauthorized on background check.');
-                setSession(null);
-              }
-            }).catch(() => {});
-          }, 300);
+          const authorized = await isDeviceAuthorized(activeSession.user.id, false);
+          if (authorized && isMounted) {
+            setSession(activeSession);
+            setIsSandboxMode(false);
+          } else if (isMounted) {
+            console.warn('[PWA Boot] Device unauthorized for active session.');
+            setSession(null);
+          }
+        } else if (isMounted) {
+          setSession(null);
         }
         setIsDbOffline(false);
       } catch (err: any) {
@@ -143,17 +142,15 @@ export default function App() {
     getSession();
 
     // Listen for Auth Changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, newSession) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, newSession) => {
       if (!isMounted) return;
       if (newSession && !isSandboxMode) {
-        setSession(newSession);
-        setTimeout(() => {
-          isDeviceAuthorized(newSession.user.id).then((authorized) => {
-            if (!authorized && isMounted) {
-              setSession(null);
-            }
-          }).catch(() => {});
-        }, 500);
+        const authorized = await isDeviceAuthorized(newSession.user.id, false);
+        if (authorized && isMounted) {
+          setSession(newSession);
+        } else if (isMounted) {
+          setSession(null);
+        }
       } else if (!newSession && !isSandboxMode) {
         setSession(null);
       }

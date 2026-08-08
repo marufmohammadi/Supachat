@@ -243,11 +243,17 @@ export default function AuthLayout({ onAuthSuccess, onOpenDbSetup, isDbOffline =
       } else {
         // SECONDARY DEVICE LOGIN ATTEMPT! Requires Primary Device approval
         console.log('[DEVICE-VERIFICATION] Secondary device detected. Requesting Primary Device approval...');
-        const req = await deviceService.createLoginRequest(userId, currentFpPayload, false);
+        let req = await deviceService.getPendingLoginRequestForRequester(userId, currentFpPayload.device_id, false);
+        if (!req) {
+          req = await deviceService.createLoginRequest(userId, currentFpPayload, false);
+        }
         setPendingRequestId(req.id);
         setPendingSession(session);
         setWaitingForApproval(true);
-        setApprovalCountdown(60);
+        const now = Date.now();
+        const exp = new Date(req.expires_at).getTime();
+        const remainingSec = Math.max(1, Math.floor((exp - now) / 1000));
+        setApprovalCountdown(remainingSec > 0 ? remainingSec : 60);
       }
     } else {
       // First time login OR previous primary device logged out/offline -> Automatically promote current login to Primary Device
